@@ -34,8 +34,9 @@ import { isoSnapshot, listIsoProjects, readIsoProject } from "./isogen.js";
 import { listMapProjects, mapSnapshot, readMapProject } from "./mapgen.js";
 import { listMusicJobs, musicSnapshot, readMusicJob } from "./musicgen.js";
 import { listSfxJobs, readSfxJob, sfxNextActions, sfxSnapshot } from "./sfxgen.js";
+import { listUiJobs, readUiJob, uiSnapshot } from "./uigen.js";
 import { TOOL_METHODS } from "./wire.js";
-import { MUSIC_STAGES, MAP_STAGES, SFX_STAGES, SPRITE_STAGES, ISO_STAGES, PANEL_KEY, STUDIO_MODULES, assetBasePath, buildOpenLink, originForLinks, type OpenIntent } from "./links.js";
+import { MUSIC_STAGES, MAP_STAGES, SFX_STAGES, SPRITE_STAGES, ISO_STAGES, UI_STAGES_LINK, PANEL_KEY, STUDIO_MODULES, assetBasePath, buildOpenLink, originForLinks, type OpenIntent } from "./links.js";
 import { loadConfig } from "./config.js";
 import { buildGuide, GUIDE_TOPICS, guideTopicList, isGuideTopic, type GuideTopic } from "./toolguides.js";
 
@@ -57,7 +58,8 @@ export const MODULE_LABELS: Record<ModuleKey, string> = {
   iso: "45°地图编辑器",
   map: "俯视地图编辑器（导入素材图）",
   music: "音乐生成编辑",
-  sfx: "音效生成"
+  sfx: "音效生成",
+  ui: "游戏 UI 生成"
 };
 
 /**
@@ -254,7 +256,19 @@ export const METHOD_MODULE: Record<string, ModuleKey> = {
   cancelSfxGeneration: "sfx",
   setSfxApproved: "sfx",
   revealSfxJob: "sfx",
-  exportSfx: "sfx"
+  exportSfx: "sfx",
+  // 模块九 游戏 UI 生成（画框 → MOSS-Image 生图 → 抠图切件；全本地零计费）
+  listUiJobs: "ui",
+  createUiJob: "ui",
+  getUiJob: "ui",
+  saveUiJob: "ui",
+  deleteUiJob: "ui",
+  runUiGenerate: "ui",
+  runUiSlice: "ui",
+  cancelUiTask: "ui",
+  setUiApproved: "ui",
+  revealUiJob: "ui",
+  exportUi: "ui"
 };
 
 /**
@@ -271,6 +285,7 @@ export const SHARED_TOOL_METHODS: ReadonlySet<string> = new Set([
   "testMusic",
   "testMusicScore",
   "testSfx",
+  "testUi",
   "setReviewMode"
 ]);
 
@@ -361,6 +376,7 @@ const TOOL_STAGES: string[] = Array.from(
     ...MAP_STAGES,
     ...MUSIC_STAGES,
     ...SFX_STAGES,
+    ...UI_STAGES_LINK,
     "generate",
     "review",
     "map",
@@ -480,6 +496,9 @@ export function moduleForId(id: string): ModuleKey | undefined {
   if (/^m[a-z0-9]+$/.test(id)) return "map";
   if (/^a[a-z0-9]+$/.test(id)) return "music";
   if (/^f[a-z0-9]+$/.test(id)) return "sfx";
+  // UI 任务 id 形如 `u<mtime36><rand6>`。注意 `u` 前缀只在这里判，
+  // 与其它模块的前缀不冲突（`p/i/s/r/g/m/a/f`）。
+  if (/^u[a-z0-9]+$/.test(id)) return "ui";
   return undefined;
 }
 
@@ -771,6 +790,11 @@ async function snapshotOf(module: ModuleKey, id: string): Promise<any> {
     if (job === undefined) throw new Error(`找不到音效任务：${id}`);
     return sfxSnapshot(job, originForLinks());
   }
+  if (module === "ui") {
+    const job = await readUiJob(id);
+    if (job === undefined) throw new Error(`找不到 UI 任务：${id}`);
+    return uiSnapshot(job, originForLinks());
+  }
   const job = await readRigJob(id);
   if (job === undefined) throw new Error(`找不到骨骼动画任务：${id}`);
   // 工具侧要的是**绝对** URL（会直接贴给用户点），所以带上已上报的 origin。
@@ -826,6 +850,15 @@ function sfxStageOf(method: string): "generate" | "export" | undefined {
   if (method === "exportSfx") return "export";
   if (method === "setSfxApproved" || method === "revealSfxJob" || method === "deleteSfxJob") return undefined;
   return "generate";
+}
+
+/** UI 模块：从方法名推断该落在哪个阶段（链接要带 stage）。 */
+function uiStageOf(method: string): "layout" | "generate" | "slice" | undefined {
+  if (method === "exportUi") return "slice";
+  if (method === "runUiGenerate") return "generate";
+  if (method === "runUiSlice") return "slice";
+  if (method === "setUiApproved" || method === "revealUiJob" || method === "deleteUiJob") return undefined;
+  return "layout";
 }
 
 /**
@@ -923,7 +956,9 @@ function intentFromCall(method: string, payload: Record<string, any>, value?: an
         : musicStageOf(method)
       : owner === "sfx"
         ? sfxStageOf(method)
-        : undefined;
+        : owner === "ui"
+          ? uiStageOf(method)
+          : undefined;
     const effectiveStage = stage ?? autoStage;
     const scoreId = typeof value?.scoreId === "string" && value.scoreId !== "" ? value.scoreId : undefined;
     return targetId === ""
@@ -1071,7 +1106,7 @@ export function registerStudioTools(host: StudioToolHost, gateway: GameStudioGat
         if (id === "") {
           // 只列可见模块的清单：隐藏的模块连「有哪些项目」都不给模型看一眼。
           await assertModuleVisible(moduleOf(args?.module));
-          const [projects, images, sequences, rigs, isos, maps, music, sfx] = await Promise.all([
+          const [projects, images, sequences, rigs, isos, maps, music, sfx, ui] = await Promise.all([
             hidden.has("sprite") ? [] : listProjects(),
             hidden.has("image") ? [] : listImageJobs(),
             hidden.has("sequence") ? [] : listSequenceJobs(),
@@ -1079,7 +1114,8 @@ export function registerStudioTools(host: StudioToolHost, gateway: GameStudioGat
             hidden.has("iso") ? [] : listIsoProjects(),
             hidden.has("map") ? [] : listMapProjects(),
             hidden.has("music") ? [] : listMusicJobs(),
-            hidden.has("sfx") ? [] : listSfxJobs()
+            hidden.has("sfx") ? [] : listSfxJobs(),
+            hidden.has("ui") ? [] : listUiJobs()
           ]);
           const links: Record<string, string> = {};
           for (const key of MODULES) if (!hidden.has(key)) links[key] = buildOpenLink({ module: key });
@@ -1094,8 +1130,9 @@ export function registerStudioTools(host: StudioToolHost, gateway: GameStudioGat
             mapProjects: maps,
             musicJobs: music,
             sfxJobs: sfx,
+            uiJobs: ui,
             links,
-            hint: "用 game_material({action:'status', module, id}) 看某个目标的细节；八方向图的四步是 images → videos → frames → sheet，45°地图编辑器是 assets（素材）→ paint（地图）→ export（导出），俯视地图编辑器是 assets（素材）→ rules（自动连接）→ paint（地图）→ export（导出），全本地不花钱；音乐是 generate（生成）→ edit（编辑）→ export（导出），生成按谱乐 AI 积分计费；音效是 generate（生成，火山引擎 Seed-Audio）→ export（导出），每次生成真实计费。"
+            hint: "用 game_material({action:'status', module, id}) 看某个目标的细节；八方向图的四步是 images → videos → frames → sheet，45°地图编辑器是 assets（素材）→ paint（地图）→ export（导出），俯视地图编辑器是 assets（素材）→ rules（自动连接）→ paint（地图）→ export（导出），全本地不花钱；音乐是 generate（生成）→ edit（编辑）→ export（导出），生成按谱乐 AI 积分计费；音效是 generate（生成，火山引擎 Seed-Audio）→ export（导出），每次生成真实计费；游戏 UI 是 layout（画框）→ generate（MOSS-Image 生图）→ slice（抠图切件），全在本机 ComfyUI 跑、零计费。"
           };
         }
         // ⚠️ 这里**不能**再按 module 短路：`status({module:'iso', id})` 也走到这里，
@@ -1963,7 +2000,10 @@ const UPLOAD_KINDS: Record<ModuleKey, string[]> = {
   // 上传这条路给出明确报错，而不是掉进 sequence 分支做别的事。
   music: [],
   // 音效模块：参考图 / 参考音频（两者互斥，上限 10MB）。
-  sfx: ["referenceImage", "referenceAudio"]
+  sfx: ["referenceImage", "referenceAudio"],
+  // UI 模块 v1 不导入本地图：画框 + MOSS 生图已经够用，参考图入口以后再开。
+  // 留空数组让上传这条路给出明确报错，而不是掉进别的分支做别的事。
+  ui: []
 };
 
 /** sprite 的本地视频槽位：`turn`（转圈）或八个方向之一。 */
@@ -2385,6 +2425,8 @@ function renderStatus(value: any): string {
       ...(value.musicJobs ?? []).map((j: any) => `  - ${j.id} ${j.name} — ${j.workflow === "compose" ? `谱曲 ${j.compositions ?? 0} 版 · ` : ""}${j.songsReady}/${j.songsTotal} 首 · ${j.versions} 个版本${j.busy ? " · ⏳" : ""}`),
       `音效任务（${(value.sfxJobs ?? []).length}）：`,
       ...(value.sfxJobs ?? []).map((j: any) => `  - ${j.id} ${j.name} — ${j.takes ?? 0} 条${j.latestDuration === null || j.latestDuration === undefined ? "" : ` · 最新 ${Number(j.latestDuration).toFixed(2)}s`}${j.busy ? " · ⏳" : ""}`),
+      `UI 任务（${(value.uiJobs ?? []).length}）：`,
+      ...(value.uiJobs ?? []).map((j: any) => `  - ${j.id} ${j.name} — ${j.width}×${j.height} · ${j.boxes ?? 0} 个画框 · 出图 ${j.renders ?? 0} 张 · 切图 ${j.slices ?? 0} 张${j.busy ? " · ⏳" : ""}`),
       ...(Array.isArray(value.hiddenModules) && value.hiddenModules.length > 0
         ? [`已隐藏的功能（工具面同样不可调用）：${value.hiddenModules.map((key: string) => MODULE_LABELS[key as ModuleKey] ?? key).join("、")}`]
         : []),

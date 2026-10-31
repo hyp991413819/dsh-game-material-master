@@ -87,6 +87,7 @@ import * as isogen from "./isogen.js";
 import * as mapgen from "./mapgen.js";
 import * as musicgen from "./musicgen.js";
 import * as sfxgen from "./sfxgen.js";
+import * as uigen from "./uigen.js";
 import { musicGuidePayload } from "./musicguide.js";
 import { musicScoreGuidePayload } from "./musicscoreguide.js";
 import { clearScoreDepsCache, detectScoreDeps } from "./musicscore.js";
@@ -423,6 +424,18 @@ export class GameStudioGateway extends TypertRemoteService {
       "sfxFormat",
       "sfxSampleRate",
       "sfxTimeoutMs",
+      // 游戏 UI 生成（模块九 · ui）：MOSS-Image 生图 + WeVisOne-VL / Qwen-Edit 切图。
+      // 全部是普通配置项（没有凭据），所以照常进白名单。
+      "uiComfyBaseUrl",
+      "uiMossModel",
+      "uiMossClip",
+      "uiMossVae",
+      "uiWevisoneModel",
+      "uiQwenModel",
+      "uiQwenClip",
+      "uiQwenVae",
+      "uiTimeoutMs",
+      "comfyOutputDir",
       "cellWidth",
       "cellHeight",
       "frameCount",
@@ -2778,6 +2791,89 @@ export class GameStudioGateway extends TypertRemoteService {
     });
   }
 
+  // ── 游戏 UI 生成（模块九 · ui）：画框 → MOSS-Image 生图 → 抠图切件 ──────
+  // 全本地（本机 ComfyUI），零计费。
+
+  async testUi() {
+    return uigen.testUiConnection();
+  }
+
+  async listUiJobs() {
+    return { jobs: await uigen.listUiJobs() };
+  }
+
+  async createUiJob(payload: any) {
+    const input = asRecord(payload);
+    const job = await uigen.createUiJob({
+      name: typeof input.name === "string" ? input.name : undefined,
+      layout: input.layout,
+      reviewMode: input.reviewMode === "manual" ? "manual" : input.reviewMode === "auto" ? "auto" : undefined
+    });
+    return uigen.uiSnapshot(job, originForLinks());
+  }
+
+  async getUiJob(payload: any) {
+    const id = asString(asRecord(payload).jobId);
+    const job = await uigen.readUiJob(id);
+    if (job === undefined) throw new Error(`UI 任务不存在：${id}`);
+    return uigen.uiSnapshot(job, originForLinks());
+  }
+
+  async saveUiJob(payload: any) {
+    const input = asRecord(payload);
+    return uigen.saveUiJob(asString(input.jobId), {
+      name: typeof input.name === "string" ? input.name : undefined,
+      layout: input.layout,
+      settings: input.settings,
+      sliceSettings: input.sliceSettings,
+      reviewMode: input.reviewMode === "manual" ? "manual" : input.reviewMode === "auto" ? "auto" : undefined
+    });
+  }
+
+  async deleteUiJob(payload: any) {
+    await uigen.deleteUiJob(asString(asRecord(payload).jobId));
+    return { ok: true };
+  }
+
+  async runUiGenerate(payload: any) {
+    return uigen.startUiGeneration(asString(asRecord(payload).jobId));
+  }
+
+  async runUiSlice(payload: any) {
+    const input = asRecord(payload);
+    return uigen.startUiSlice(asString(input.jobId), typeof input.renderId === "string" ? input.renderId : undefined);
+  }
+
+  async cancelUiTask(payload: any) {
+    const input = asRecord(payload);
+    const id = asString(input.jobId);
+    const generate = uigen.cancelUiTask(id, "generate");
+    const slice = uigen.cancelUiTask(id, "slice");
+    return { ok: generate || slice, canceled: { generate, slice } };
+  }
+
+  async setUiApproved(payload: any) {
+    const input = asRecord(payload);
+    return uigen.setUiApproved(asString(input.jobId), input.stage, input.approved === true);
+  }
+
+  async revealUiJob(payload: any) {
+    const id = asString(asRecord(payload).jobId);
+    const dir = uigen.uiJobDir(id);
+    const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+    try {
+      spawn(command, [dir], { detached: true, stdio: "ignore" }).unref();
+    } catch (error) {
+      throw new Error(`无法打开目录：${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { ok: true, dir };
+  }
+
+  async exportUi(payload: any) {
+    const input = asRecord(payload);
+    return uigen.exportUi(asString(input.jobId), typeof input.batchId === "string" ? input.batchId : undefined);
+  }
+
   assertSurface() {
     for (const spec of METHODS) {
       if (typeof this[spec.method] !== "function") {
@@ -2925,7 +3021,7 @@ const SERVABLE_MUSIC_DIRS = musicgen.SERVABLE_MUSIC_DIRS;
 /** 音效生成（模块八）：参考素材、每次生成的音频、导出。 */
 const SERVABLE_SFX_DIRS = sfxgen.SERVABLE_SFX_DIRS;
 
-type AssetScope = "assets" | "image-assets" | "sequence-assets" | "rig-assets" | "iso-assets" | "map-assets" | "music-assets" | "sfx-assets";
+type AssetScope = "assets" | "image-assets" | "sequence-assets" | "rig-assets" | "iso-assets" | "map-assets" | "music-assets" | "sfx-assets" | "ui-assets";
 
 interface AssetTarget {
   file: string;
@@ -2960,6 +3056,10 @@ function resolveAssetTarget(scope: AssetScope, id: string, relative: string): As
   if (scope === "sfx-assets") {
     if (!sfxgen.isValidSfxJobId(id)) return undefined;
     return { file: sfxgen.sfxAssetPath(id, relative), dirs: SERVABLE_SFX_DIRS };
+  }
+  if (scope === "ui-assets") {
+    if (!uigen.isValidUiJobId(id)) return undefined;
+    return { file: uigen.uiAssetPath(id, relative), dirs: uigen.SERVABLE_UI_DIRS };
   }
   if (!seqgen.isValidSequenceJobId(id)) return undefined;
   return { file: seqgen.sequenceAssetPath(id, relative), dirs: SERVABLE_SEQUENCE_DIRS };
@@ -3013,7 +3113,7 @@ async function handleAsset(req, res): Promise<void> {
   // 三处同步。只改类型不改这里，TypeScript 一句话都不会说 —— `scope` 是断言出来的，
   // 而漏掉的那个 scope 会在这里直接掉进 404（界面表现只是「图裂了」）。
   // 实测：`iso-assets` / `tile-assets` 这类 scope 都漏过一轮，素材全 404。
-  const SCOPES: readonly string[] = ["assets", "image-assets", "sequence-assets", "rig-assets", "iso-assets", "map-assets", "music-assets", "sfx-assets"];
+  const SCOPES: readonly string[] = ["assets", "image-assets", "sequence-assets", "rig-assets", "iso-assets", "map-assets", "music-assets", "sfx-assets", "ui-assets"];
   if (!SCOPES.includes(scope)) {
     sendText(res, 404, "Not Found");
     return;
@@ -3123,6 +3223,7 @@ export function apply(ctx) {
   riggen.activateRig();
   musicgen.activateMusic();
   sfxgen.activateSfx();
+  uigen.activateUi();
 
   // 旧版本的数据目录叫 8dir-sprites，插件改名后搬一次，已有项目无缝接上。
   void migrateLegacyDataRoot()
@@ -3185,5 +3286,6 @@ export function apply(ctx) {
     riggen.disposeRig();
     musicgen.disposeMusic();
     sfxgen.disposeSfx();
+    uigen.disposeUi();
   }, "dsh-game-material-master: pipeline cleanup");
 }

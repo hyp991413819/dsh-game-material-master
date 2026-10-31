@@ -1390,9 +1390,9 @@ section("功能管理（隐藏模块）");
     // ── 分类页签：六个入口、六个面板常驻挂载 ──────────────────────────────
     const tabButtons = collect(settings, (node) => typeof node.props?.["data-testid"] === "string" && node.props["data-testid"].startsWith("cfg-tab-"));
     const panels = collect(settings, (node) => typeof node.props?.["data-testid"] === "string" && node.props["data-testid"].startsWith("cfg-panel-"));
-    check("设置页有 6 个分类页签", tabButtons.length === 6, `${tabButtons.length} 个`);
+    check("设置页有 7 个分类页签", tabButtons.length === 7, `${tabButtons.length} 个`);
     check("默认停在「生图」页签", tabButtons.find((node) => node.props["data-testid"] === "cfg-tab-image")?.props?.["data-active"] === "true");
-    check("六个页签面板都常驻挂载（只是 hidden）", panels.length === 6, `${panels.length} 个`);
+    check("七个页签面板都常驻挂载（只是 hidden）", panels.length === 7, `${panels.length} 个`);
     check("非当前面板被 hidden", panels.find((node) => node.props["data-testid"] === "cfg-panel-music")?.props?.hidden === true);
     check("当前面板没有 hidden", panels.find((node) => node.props["data-testid"] === "cfg-panel-image")?.props?.hidden === false);
     // 当前生图后端（ark）展开，另外两张折叠；内容仍在树里，方便先配置再切换。

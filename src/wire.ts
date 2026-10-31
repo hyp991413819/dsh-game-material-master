@@ -95,7 +95,7 @@ const setReviewModeSchema = z.object({
    * ⚠️ 这个枚举漏一个模块，那条模块的「固定流程必须问清审核模式」就落不了地
    * （骨骼动画与地图地块都踩过：走到宿主才抛「未知模块」）。模块六（map）同理。
    */
-  module: z.enum(["sprite", "image", "sequence", "rig", "iso", "map", "music", "sfx"]),
+  module: z.enum(["sprite", "image", "sequence", "rig", "iso", "map", "music", "sfx", "ui"]),
   reviewMode: z.enum(["auto", "manual"])
 });
 const runImageSchema = z.object({ projectId: z.string(), key: z.string(), prompt: z.string().optional() });
@@ -1195,6 +1195,89 @@ const exportSfxSchema = z.object({
   zip: z.boolean().optional()
 });
 
+// ── 游戏 UI 生成（模块九 · ui） ──────────────────────────────────────────
+//
+// ⚠️ 这些 schema 里的**每一个键**都必须写全：typert 会按声明的 schema 校验
+// payload，schema 里没有的键会被**静默丢掉**，表现是「界面保存成功、宿主读到
+// undefined」，而且不报任何错（本仓库已经踩过好几次）。
+
+/** 一个画框。坐标是画布像素、左上原点。 */
+const uiBoxSchema = z.object({
+  id: z.string().optional(),
+  label: z.enum(["object", "character", "text"]),
+  caption: z.string(),
+  text: z.string().optional(),
+  palette: z.array(z.string()).optional(),
+  x1: z.number(),
+  y1: z.number(),
+  x2: z.number(),
+  y2: z.number()
+});
+
+/** 整份画布。 */
+const uiLayoutSchema = z.object({
+  width: z.number(),
+  height: z.number(),
+  summary: z.string(),
+  canvas: z.enum(["single", "multi_panel", "collage"]).optional(),
+  palette: z.array(z.string()).optional(),
+  boxes: z.array(uiBoxSchema)
+});
+
+const uiGenSettingsSchema = z.object({
+  steps: z.number().optional(),
+  cfg: z.number().optional(),
+  sampler: z.string().optional(),
+  scheduler: z.string().optional(),
+  seed: z.number().optional(),
+  negative: z.string().optional()
+});
+
+const uiSliceSettingsSchema = z.object({
+  matte: z.enum(["wevisone", "qwen"]).optional(),
+  resolution: z.number().optional(),
+  padding: z.number().optional(),
+  threshold: z.number().optional(),
+  grow: z.number().optional(),
+  skipBackdrop: z.boolean().optional(),
+  perElement: z.boolean().optional(),
+  rejectNeighbors: z.boolean().optional(),
+  instruction: z.string().optional(),
+  negative: z.string().optional()
+});
+
+const uiJobIdSchema = z.object({ jobId: z.string() });
+const createUiJobSchema = z.object({
+  name: z.string().optional(),
+  layout: uiLayoutSchema.optional(),
+  reviewMode: z.enum(["auto", "manual"]).optional()
+});
+const saveUiJobSchema = z.object({
+  jobId: z.string(),
+  name: z.string().optional(),
+  layout: uiLayoutSchema.optional(),
+  settings: uiGenSettingsSchema.optional(),
+  sliceSettings: uiSliceSettingsSchema.optional(),
+  reviewMode: z.enum(["auto", "manual"]).optional()
+});
+const runUiGenerateSchema = z.object({ jobId: z.string() });
+const runUiSliceSchema = z.object({
+  jobId: z.string(),
+  /** 用哪一次生图切；省略 = 最近一次。 */
+  renderId: z.string().optional()
+});
+const exportUiSchema = z.object({
+  jobId: z.string(),
+  /** 导出哪一批切图；省略 = 最近一批。 */
+  batchId: z.string().optional()
+});
+const setUiApprovedSchema = z.object({
+  jobId: z.string(),
+  /** `layout` / `generate` / `slice`；省略 = 全部阶段。 */
+  stage: z.enum(["layout", "generate", "slice"]).optional(),
+  approved: z.boolean()
+});
+
 export const METHODS: MethodSpec[] = [  { method: "getConfig", result: configViewSchema },
   { method: "saveConfig", payload: saveConfigSchema, result: configViewSchema },
   { method: "testArk", result: jsonObject },
@@ -1402,7 +1485,22 @@ export const METHODS: MethodSpec[] = [  { method: "getConfig", result: configVie
   { method: "cancelSfxGeneration", payload: sfxJobIdSchema, result: jsonObject },
   { method: "setSfxApproved", payload: setSfxApprovedSchema, result: jsonObject },
   { method: "revealSfxJob", payload: sfxJobIdSchema, result: okSchema },
-  { method: "exportSfx", payload: exportSfxSchema, result: jsonObject }
+  { method: "exportSfx", payload: exportSfxSchema, result: jsonObject },
+
+  // ── 游戏 UI 生成（模块九 · ui）：画框 → MOSS-Image 生图 → 抠图切件 ──────
+  // 全本地（本机 ComfyUI），零计费。
+  { method: "testUi", result: jsonObject },
+  { method: "listUiJobs", result: jsonObject },
+  { method: "createUiJob", payload: createUiJobSchema, result: jsonObject },
+  { method: "getUiJob", payload: uiJobIdSchema, result: jsonObject },
+  { method: "saveUiJob", payload: saveUiJobSchema, result: jsonObject },
+  { method: "deleteUiJob", payload: uiJobIdSchema, result: okSchema },
+  { method: "runUiGenerate", payload: runUiGenerateSchema, result: startedSchema },
+  { method: "runUiSlice", payload: runUiSliceSchema, result: startedSchema },
+  { method: "cancelUiTask", payload: uiJobIdSchema, result: jsonObject },
+  { method: "setUiApproved", payload: setUiApprovedSchema, result: jsonObject },
+  { method: "revealUiJob", payload: uiJobIdSchema, result: okSchema },
+  { method: "exportUi", payload: exportUiSchema, result: jsonObject }
 ];
 
 

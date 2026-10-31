@@ -2209,6 +2209,10 @@ node scripts/dsh-web-cookie.mjs 127.0.0.1:43121 --json
 | `node scripts/verify-map-gateway.mjs` | 模块六**走真实网关**（**228 项**）：wire 清单（24 个方法）与工具面覆盖、模块接线（`m` 前缀 / 阶段 / 上传槽位）、素材导入与形态切换、编辑 / 撤销 / `mapPlan({view, have})` 的差集、`runMapGenerate`、预览与导出的状态回流（含 zip 的可点 URL 与 `exportPath`）、并发提交只放行一个、`setMapApproved`、**资源路由真调一遍**（200 / 403 / 目录穿越 / 未知 scope / 非法 id / **zip 的 MIME 是 `application/zip`**；`maps/` 已不在白名单里、**`ai/` 在白名单里且 AI 素材图能 200 取回**）、`composeMapAsset` 走网关（文件路径与 `shape` 透传 / 三种形态的返回体 / 整格给多张报错 / 只整理不导入）、**工具面里 `composeMapAsset` 的 openUrl 带 `dialog=add&asset&frames&shape`**（形态是拼块时带的就是 a2quad）、`importMapTileset` / `saveMapTileset` 的 `fps` 不丢（schema 吞字段是这类「选了没反应」的经典成因）、`mapPlan.fpsMax`、`clarity` / `scale` / `loop` / `stampPass` 也不被 schema 吞（4 倍图 → 缩成 64×64 落盘；整图通行区域走网关真能改）、`createMapProject.grid` 不丢（建出来真的是 64 网格）、`revealMapProject` 与落盘结构、**整图**（`stamp` 规格不丢 / 调色板一条 / `stampPlace` 一次 6 格 / `stampMove` / `stampRotate` / `mapPlan({pass})` 三态 / 擦一格整张没了 / AI 那条路的 `composeMapAsset(shape:stamp)` 与回链 `cols`&`rows`）、`mapInspect` / `mapRender`（逐格 / 本机 PNG / 区域裁切 / 标记叠加）、`dryRun` / `ifRevision`、标记语义 `kind/color/note/tags` 与 `@5` 导出、`importMapTileset.path` |
 | `node scripts/verify-map-client.mjs` | 模块六界面**真渲染 + 黄金对照**（**474 项**）：真加载 `lib/client.js` + **有状态会重渲染的迷你 React**，用**真宿主数据**渲染面板；顶栏项目名的「复制 ID」按钮会把 projectId 交给剪贴板。① 四个 `MAP_*` 坐标函数与宿主真实现逐点比对（环绕与非环绕两组 × 整张地图采样 + 边界点 + 图外点）；② **画布 `drawImage` 调用序列与宿主 `mapPlan` 计划逐项相等**（含 4 象限与动画帧，预览 = 导出），并按 `clearRect` 分帧收集、断言「挂载首帧 == 同一视口的计划」（增量缓存必须按**视口**失效，只按 key 判会让视口变大后新露出来的格子一直空着）；③ 在画布上点一下真的改了地图、撤销回得去、`dropKeys` 真的删掉了缓存；④ 空态、12 个工具格（6 列 × 2 行）、**调色板读宿主 `palette`**（A2 素材只出一个自动连接笔刷）；⑤ **导出卡片**：内容是多选、执行只有一个「导出」、倍率只在勾了 PNG 时出现、提交的 formats 就是勾的那几项、导完由 **busy 轮询**（`setInterval` 有真实现，由测试放出来）刷出新清单、主下载按钮指向 zip 且带 `download`、卡片写出本机绝对路径、「另存为…」先弹框再取字节（`pick>fetch>write>close`）；⑥ **源码与渲染文案两套黑名单**（源码那份只扫模块六切片，并放行唯一的协议字段 `"chunks"` —— 曾经为了骗过它写出过 `"chu" + "nks"`，那种写法比术语本身更坏）；⑦ **「模块⑥已转正」的反向验证**：产物里没有 `MapExperimentalDialog`、`MODULES` 条目没有 `experimental`、面板里没有角标与常驻提示条、`experimentalGateMuted` 里没有 `map` 这一格，同时反过来断言**模块⑤仍然带实验性标记**（别把转正顺手扩大化）；⑧ **工具小标签的层级**：`.SPR_mapEdTip` 的 z-index 必须高于对话框遮罩与看图遮罩（从 CSS 里取数比大小，配「旧值 60 判不过 / 没写 z-index 的选择器取不到数」的反向验证 —— 低了的话「新增素材」里的说明会被整片蒙层盖住，而 jsdom 看不见绘制顺序）；⑨ **「素材说明」三页**：三张示例图的 `src` 逐个字节等于 `renderGuideSheets()` 真产出的那张，网格的 `background-size` 等于**真实列数 / 行数 / 每块再分数**推出来的百分比（4×2 → `25% 50%`、4×4 → `25% 25%`、2×5 且每块再分 2×2 → `50% 20%` + `25% 10%`），图注里的数字跟着现算；页签 / 上一页 / 下一页 / 页码与「关掉说明窗口时草稿还在」「关掉「新增素材」时说明窗口一起消失」「草稿已选整格则直接翻到那一页」逐条验；网格动画则在 CSS 数值上钉 `infinite` 与「两层错开半拍」，并配「去掉 infinite 判不过」的反向验证；⑩ **「AI 生成素材」**：拼出来的提示词三种分岔（静态 / 生图多帧 / 视频抽帧）逐条断言、帧数越界夹到 1..16；**形态**按「自动（三种画法 + 判据都写进去、并把 shape 交给 `composeMapAsset`，含『不要分格 / 别自己先拼多格排布』）/ 指定（只写那一段、标明『用户已指定，不要改』）」分组断言；还钉住「notes 报接缝时不要自动重跑」这条；对话框四个控件与「帧数为 1 时视频模型点不动」；**新增素材的「动画速度」**：只对会动的素材显示这一项、可选值、点「确定」时 `fps` 真的交给宿主（假 `FileReader` + 假桥把 import 的属性原样转给宿主）、列表徽章，以及**拨 1 秒后 8 帧/秒的素材走 8 帧、跟全局 1 帧/秒的只走 1 帧**；**清晰度**（回链带 `scale=4` → 出现三个选项、默认平滑、点确定时 `clarity` / `scale` 一起发出去）、**循环方式**（静态素材不显示 / 三个选项 / 点「倒放」「来回」真的切过去 / 提交带上 `loop`）、**一格多大**（四档 + 说明 + 建出来真的是 64 网格，建完即删并切回 32）、**整图**（调色板整张缩略图 / 点一次一条 stampPlace / 拖动不连印 / 右键转 90° 且不擦除 / **切到标记·橡皮·油漆桶·吸管时悬停框回到 1×1、橡皮右键擦一格** / 橡皮碰一格提示整张 / 区域开关带 pass 与三色叠加 / 属性窗口的通行区域 / 对话框的占格与区域格子与提交）；点「生成」时用**假的 `sessions` / `uiWorkspace`** 断言「不带 workspaceId / cwd 地建会话 → 切到对话界面 → 以 queue 模式把拼好的正文发出去 → 引用用后即放」；回链 `dialog=add&asset&frames&shape` 走一遍：`fetch` 打桩返回真 PNG → 「新增素材」预填（名字 / 格子=项目网格 / **用法按回链里的 shape**：普通 → 普通、拼块 → 拼块且不预选翻页图、整格 → 整格；不认识的 shape 退回普通），图片 404 时仍打开空的「新增素材」并给提示 |
 | `node scripts/verify-sfx.mjs` / `verify-sfx-gateway.mjs` / `verify-sfx-client.mjs` | 模块八：mock 火山引擎语音的请求 / 返回 / 错误 / 参考 / 导出 / 路由（**55 项**）、wire schema 不丢键 + 工具面 + 深链接 + 隐藏模块（**39 项**）、界面真渲染与草稿合并（**29 项**） |
+| `node scripts/verify-ui.mjs` | 模块九「游戏 UI 生成」内核（**82 项**）：画布尺寸与画框校验（16 对齐 / 越界 / 面积为 0 / 文字框缺 text 全部抛错、不静默夹）、**两种 layout 格式的差异**（`compileUiLayout` 是 `abs_centralized`/`yxyx` 给 MOSS 文本编码、`draftUiLayout` 是 `abs`/`xyxy` 给切片节点，并反向断言两者对同一个框坐标确实不同 —— 混用会抛 `'dict' object has no attribute 'strip'` 或把框摆错）、**坐标换算与 Python 侧逐位黄金对照**（`y,x,y,x` 顺序、奇数尺寸用 `floor` 取中心）、背景板判定（≥50% 画布）、外扩裁切、MOSS 工作流（layout 直接进文本编码、**没有**编译节点、`type=moss_image`）、两种切图工作流（**WeVisOne 的 `model` 是字符串权重目录名、不是 MODEL 连线**，且没有 UNET/CLIP/VAE 节点、没有 `per_element`）、设置归一化（含 **`resolution=0` 不能被夹走** —— 夹成 256 会把裁片放大、切出来的图与画框对不上；**老数据的 `birefnet` 迁移成 `wevisone`**）、任务 id 前缀、PNG 尺寸解析，以及**界面静态契约**（画布必须同时覆盖 `backgroundSize` / `backgroundRepeat`、抠图下拉框必须绑宿主的 `sliceSettings.matte` 并真的存回去、不许有会漂移的本地 `sliceMode` state） |
+| `node scripts/verify-ui-client.mjs` | 模块九界面**真渲染 + 静态契约**（**21 项**）：用迷你 React 真加载 `lib/client.js` 并渲染工作台，断言分发链里有 `ui` 分支、12 个远程方法都在 `api` 上；然后逐条钉住两个**只有真机才暴露**的 bug —— ① 画布有生成图时必须覆盖 `backgroundSize:contain` / `backgroundRepeat:no-repeat` / `backgroundPosition:center`（只设 `backgroundImage` 会被样式表里的 `background-size:20px` 当成图案平铺成「一堆小图的合图」），并有 `data-has-render` 与 CSS 兜底；② 抠图方案下拉框必须 `value: job.sliceSettings?.matte` 且 `onChange` 里调 `saveUiJob` 存回宿主（曾经是个纯本地 state，界面显示 BiRefNet、实际跑 Qwen，不报任何错）。生成 / 切图按钮都必须走 `BusyBtn` 带遮罩 |
+| `node scripts/e2e-ui.mjs` | 模块九**真实链路端到端**（**会占显卡几分钟**，零计费）：真调本机 ComfyUI 跑 MOSS-Image 生图 → 按画框切图（默认 `wevisone`）→ 导出 zip，产物留在 `<DSH_HOME>/game-material-master/ui-jobs/` 并打印绝对路径。先跑 `testUiConnection` 确认节点包与权重都在，缺什么直接点名 |
+| `node scripts/probe-ui-matte.mjs` + `probe-ui-matte-report.mjs` | 抠图方案 **A/B 对照工具**（不是自检；`probe` 会占显卡、`report` 只读）。`probe` 拿**同一张**已渲染的 MOSS 图，把 `wevisone` / `qwen` 各跑一遍落到 `output/gmm_ab_*/`；`report` 用内置 PNG 解码量 **alpha 分布 / 内部不透明度 / 与源图的 RGB 偏差**。⚠️ 这两个脚本存在的理由：曾用**两次不同的 MOSS 生图**分别跑两种抠图，把「源图本身模糊」误判成「WeVisOne 对大面板不行」—— 同一张清晰源图上 WeVisOne 的 RGB 偏差只有 **0.52**（逐像素忠实），Qwen 是 **30.11**（重绘并偏色）。**换抠图方案必须用同一张源图对照** |
 | `node scripts/e2e-map.mjs` | 模块六**真实链路端到端**（不联网、不花钱）：内置素材（5 张，含 4 张 A2）→ 再合成导入一张 A2 与一张普通图 → 画满 24×24（自动连接长边）→ 叠一层普通图块 → 断言计划里「一格四条 op」→ 查一次跨边界的视口（环绕时 `visibleKeys` 会出现负数 key）→ 撤销 / 重做 → 一键生成三种地图 → 预览 → 导出，**故意留下产物**并打印绝对路径，方便人眼验收 |
 | `node scripts/verify-custom-image.mjs` | **自定义生图后端**（**68 项**）：起一台本地假服务端把 OpenAI / ComfyUI / SD WebUI 三种协议都模拟出来，全程离线零计费。断言的重点不是「有没有返回字节」而是**请求真的长对了**：端点路径、body 字段名（`cfg_scale` / `denoise` / `init_images`…）、参考图的形态（multipart / 纯 base64 / 上传后的文件名）、`images/edits` 端点不存在时退回 `generations` 的 `image` 字段、ComfyUI 的轮询（第一次故意返回空）、**占位符的 JSON 类型**（`{{width}}` 必须是数字，写成字符串 ComfyUI 会报 type 错；提示词里的引号换行不能破坏工作流 JSON）、没写 `{{image}}` 时自动改 `LoadImage` 节点，以及 `imageProvider` 一个字段切换后所有调用点真的换了端点（Ark 那边一次都没打）。另含配置归一化（脏数据按上下限收敛）与「报错要讲清改哪里」 |
 | `node scripts/verify-comfy.mjs` | 本地 ComfyUI 后端（**124 项**，纯本地、不联网、不花钱、**不需要真装 ComfyUI**）：脚本自己用 `node:http` 在随机端口起一个 mock，覆盖地址归一化与注入点解析、`parseComfyWorkflow` 的 **UI 格式自动转换**（官方 All-in-One 形状的夹具：控件值按 `widgets_values` 顺序取、`randomize` 不当种子、连线写成 `[来源节点, 槽位]`、没连的 `first` 留给探测、便签与静音节点丢掉、`droppedWidgets` 计数、新版对象形式的 `links`）、探测的**四级顺序**（显式覆盖回退 / 已有字面量量 / 已有 `LoadImage` / `object_info` 声明的 optional IMAGE）、两个 `LoadImage` 时首尾各用其一、注入的纯函数性与「插入节点只写 `image` 一个键」、`first_frame_reference` 自动打开、无首帧位置报错、以及 HTTP 层（`/system_stats`、`/queue` 排队中、`/history` 执行失败带出 node_type、上传 multipart、`node_errors` / `error` 两条失败路径、从 outputs 挑 mp4 而不挑 png、只有图片时判失败、Cookie 的归一化与「每个请求都真的带上了这个头」） |
@@ -2653,6 +2657,74 @@ X-Api-Request-Id: <uuid>
   配置字段、intake / status / review / approve / upload。
 - `verify-sfx-client.mjs`（29 项）：模块注册、设置页字段、远程方法清单、草稿合并、真渲染
   （新建卡 / 任务卡 / 参考 / takes / 生成 / 遮罩）。
+
+## 游戏 UI 生成（模块九 · `ui`）
+
+全本地零计费，但要占显卡、分钟级。三段固定顺序：**layout（画框）→ generate（生图）→ slice（切图）**。
+
+### 两种 layout 格式，别混用
+
+| 消费者 | 格式 | 由谁产出 |
+|---|---|---|
+| MOSS-Image 的文本编码 | `abs_centralized` / `yxyx` | `compileUiLayout()` |
+| 切片节点（WeVisOne / Qwen-Edit） | `abs` / `xyxy` + `width`/`height` | `draftUiLayout()` |
+
+给切片节点喂编译版会抛 `'dict' object has no attribute 'strip'`；给文本编码喂草稿版则会把框摆错。
+`verify-ui.mjs` 对同一个框断言两者坐标确实不同，防止有人「统一」成一种。
+
+### 抠图两方案的取舍（同一张源图的实测）
+
+同一张 1024×1024 的 MOSS 渲染图，两个画框各跑一遍（`probe-ui-matte.mjs`）：
+
+| 画框 | 方案 | 产物尺寸 | 内部不透明度 | RGB 与源图偏差 | 耗时 |
+|---|---|---|---|---|---|
+| 面板 800×696 | **WeVisOne-VL** | 791×683 | 249.2 | **0.52**（逐像素忠实） | 3 秒 |
+| 面板 | Qwen-Image-Edit | 800×704 | 254.7 | 30.11（重绘） | 214 秒 |
+| 标题文字 | **WeVisOne-VL** | 416×56 | — | **2.43** | 1 秒 |
+| 标题文字 | Qwen-Image-Edit | 441×99 | — | 45.02（重绘） | 约 1500 秒 |
+
+两处 Qwen 的毛病都不是「抠得不准」，而是**它会把元素重画一遍**：
+
+- 面板：宝箱从浅蓝变成饱和蓝、按钮变成亮黄、外圈金边被吃掉一大半。
+- 标题文字：**把标题下方那条金色分隔装饰一起画了进来**，产物比 WeVisOne 高一倍（99 vs 56）。
+
+结论：**UI 切图要的是「原图那块像素 + 透明通道」，不是「重新画一遍」**，所以默认 WeVisOne。
+Qwen-Edit 仍是可选项 —— 元素与背景颜色太接近、指代描述定位不到时，它的编辑式去底更稳。
+另外 Qwen 明显更慢（两个框共 29.5 分钟，WeVisOne 4 秒），因为它每个框都要跑 25 步采样。
+
+⚠️ **换抠图方案必须用同一张源图对照**。曾经用两次不同的 MOSS 生图分别跑两种抠图
+（MOSS 有随机性），把「那张源图本身就糊」误判成「WeVisOne 对大面板不行」，差点改错默认值。
+`scripts/probe-ui-matte.mjs`（跑，占显卡）+ `probe-ui-matte-report.mjs`（只读，量 alpha 与 RGB 偏差）
+就是为这件事留的，`report` 里按 ±24px 搜最佳位移再比 RGB —— 产物是紧裁的，
+按画框原点直接对齐会整体错位，量出来的偏差没有意义（曾把「文字抠得很准」量成 141）。
+
+### WeVisOne 的三处接线特性
+
+- `model` 是**字符串**（`models/wevisone/` 下的权重目录名），**不是** MODEL 连线；整个工作流没有 UNET / CLIP / VAE 节点。
+- 没有 `per_element`（那是 BiRefNet 的参数）；也没有 `resolution` —— 指代定位走 VLM，不吃这个数。
+- 首帧加载 4.6 GB 权重要 **9~10 分钟**，之后每框几秒。`keep_loaded:false` 是故意的：UI 是一次一批，留着白占显存。
+
+### 两个上游坑（节点包自身的 bug，插件侧兜住）
+
+1. **Qwen-Edit 写完 manifest 必崩**：`Object of type ModelPatcherDynamic is not JSON serializable`。
+   此时 PNG **已经在盘上**，但 `/history` 的 `outputs` 是空的。所以切图走 `waitComfyHistory(..., { tolerateError: true })`
+   + 扫盘兜底。
+2. **扫盘时 prefix 的语义**：节点把 prefix 最后一段当**文件名前缀**、不是目录名，
+   文件落在 `output/<prefix 去掉最后一段>/` 下、命名 `<最后一段>_NN_*.png`。按目录理解会一个都找不到。
+
+### 界面两处踩过的坑
+
+- 画布背景图被平铺成「一堆小图的合图」：只设 `backgroundImage` 会被样式表里给棋盘格写的
+  `background-size:20px 20px` 当成图案铺满。有生成图时必须同时覆盖 `backgroundSize` / `backgroundRepeat` /
+  `backgroundPosition`，并加 `data-has-render`。
+- 抠图方案下拉框曾是纯本地 state，从没发给宿主，而 `runUiSlice` 读的是宿主的 `sliceSettings.matte` ——
+  界面显示一个方案、实际跑另一个，不报任何错。现在直接绑 `job.sliceSettings.matte` 并在 `onChange` 里 `saveUiJob`。
+
+### 自检
+
+- `verify-ui.mjs`（82 项）：画框校验、两种 layout 格式差异、坐标与 Python 侧黄金对照、MOSS 与两种切图工作流、设置归一化（含 `resolution=0` 不能被夹走、`birefnet` 迁移）。
+- `verify-ui-client.mjs`（21 项）：真渲染 + 两条反向验证（画布背景、下拉框绑定）。
+- `e2e-ui.mjs`：真实链路，会占显卡。
 
 ## 许可
 

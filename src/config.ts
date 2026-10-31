@@ -94,6 +94,11 @@ export function sfxJobsRoot(): string {
   return join(dataRoot(), "sfx-jobs");
 }
 
+/** 游戏 UI 生成模块（模块九）的任务根。 */
+export function uiJobsRoot(): string {
+  return join(dataRoot(), "ui-jobs");
+}
+
 /**
  * 旧版本把数据放在 `8dir-sprites/`。第一次以新名字启动时整体搬过去，
  * 让已有项目和配置无缝接上——只搬一次，之后两个目录互不影响。
@@ -291,6 +296,41 @@ export interface Config {
   comfySeed: number;
   comfyTimeoutMs: number;
 
+  /**
+   * **游戏 UI 生成（模块九）用的 ComfyUI 地址**。空 = 跟 `comfyBaseUrl` 走。
+   *
+   * 为什么允许单独配：UI 这条链路要 MOSS-Image + WeVisOne-VL + Qwen-Image-Edit，
+   * 通常装在一台带显卡的机器上，而图生视频那套可能指向另一台。留空是最省事的
+   * 默认（同一个 ComfyUI 就够用）。
+   */
+  uiComfyBaseUrl: string;
+  /** MOSS-Image 的 UNET 文件名（`models/diffusion_models/` 下）。 */
+  uiMossModel: string;
+  /** MOSS-Image 的文本编码器（`models/text_encoders/` 下，CLIPLoader type=moss_image）。 */
+  uiMossClip: string;
+  /** MOSS-Image 的 VAE（`models/vae/` 下）。 */
+  uiMossVae: string;
+  /** WeVisOne-VL 的权重目录名（`models/wevisone/` 下，默认指代抠图方案）。 */
+  uiWevisoneModel: string;
+  /** Qwen-Image-Edit 的 UNET（`models/diffusion_models/` 下）。 */
+  uiQwenModel: string;
+  /** Qwen-Image-Edit 的文本编码器（`models/text_encoders/` 下）。 */
+  uiQwenClip: string;
+  /** Qwen-Image-Edit 的 VAE（`models/vae/` 下，必须解 RGBA 的那个）。 */
+  uiQwenVae: string;
+  /** UI 生图 / 切图的等待超时（毫秒）。本地出图慢，默认 20 分钟。 */
+  uiTimeoutMs: number;
+  /**
+   * 本机 ComfyUI 的 `output/` 目录绝对路径（例如 `F:\comfyui\ComfyUI\output`）。
+   *
+   * 用途：`QwenEdit_Layout_Matte_Slice` 在写 manifest 时会抛
+   * `ModelPatcherDynamic is not JSON serializable`（上游把 MODEL 对象塞进了
+   * json.dump），节点被标 error、history 里没有 outputs，**但 PNG 已经写盘**。
+   * 填了这个目录，切图就能在 history 失败时回退到「扫目录」把图捡回来。
+   * 留空 = 不回退（只在 history 正常时可用）。
+   */
+  comfyOutputDir: string;
+
   /** 最终整图单格宽高（像素）。 */
   cellWidth: number;
   cellHeight: number;
@@ -468,6 +508,19 @@ export const DEFAULT_CONFIG: Config = {
   comfySeconds: 0,
   comfySeed: 0,
   comfyTimeoutMs: 600000,
+
+  // 游戏 UI 生成（模块九）：MOSS-Image 生图 + WeVisOne-VL / Qwen-Image-Edit 切图。
+  // 地址留空 = 跟上面的 comfyBaseUrl 走（同一台 ComfyUI 就够用）。
+  uiComfyBaseUrl: "",
+  uiMossModel: "moss_image_sft_int8_convrot.safetensors",
+  uiMossClip: "qwen3.5_9b_int8_convrot.safetensors",
+  uiMossVae: "flux2-vae.safetensors",
+  uiWevisoneModel: "WeVisOne-VL-2B",
+  uiQwenModel: "qwen_image_2.1_int8_convrot.safetensors",
+  uiQwenClip: "qwen3vl_8b_int8_convrot.safetensors",
+  uiQwenVae: "qwen_image_2.1_vae_bf16.safetensors",
+  uiTimeoutMs: 1200000,
+  comfyOutputDir: "",
 
   musicProvider: "puyue",
   musicApiKey: "",
@@ -657,6 +710,18 @@ export function normalizeConfig(input: unknown): Config {
     // 0 = 每次随机；生成器只在探测到 seed 输入时才会写进去。
     comfySeed: asInt(raw.comfySeed, DEFAULT_CONFIG.comfySeed, 0, 9007199254740991),
     comfyTimeoutMs: asInt(raw.comfyTimeoutMs, DEFAULT_CONFIG.comfyTimeoutMs, 10000, 3600000),
+
+    // 游戏 UI 生成（模块九）。地址留空是合法值（= 跟 comfyBaseUrl 走），所以不填默认地址。
+    uiComfyBaseUrl: asString(raw.uiComfyBaseUrl, DEFAULT_CONFIG.uiComfyBaseUrl).trim().replace(/\/+$/u, ""),
+    uiMossModel: asString(raw.uiMossModel, DEFAULT_CONFIG.uiMossModel).trim() || DEFAULT_CONFIG.uiMossModel,
+    uiMossClip: asString(raw.uiMossClip, DEFAULT_CONFIG.uiMossClip).trim() || DEFAULT_CONFIG.uiMossClip,
+    uiMossVae: asString(raw.uiMossVae, DEFAULT_CONFIG.uiMossVae).trim() || DEFAULT_CONFIG.uiMossVae,
+    uiWevisoneModel: asString(raw.uiWevisoneModel, DEFAULT_CONFIG.uiWevisoneModel).trim() || DEFAULT_CONFIG.uiWevisoneModel,
+    uiQwenModel: asString(raw.uiQwenModel, DEFAULT_CONFIG.uiQwenModel).trim() || DEFAULT_CONFIG.uiQwenModel,
+    uiQwenClip: asString(raw.uiQwenClip, DEFAULT_CONFIG.uiQwenClip).trim() || DEFAULT_CONFIG.uiQwenClip,
+    uiQwenVae: asString(raw.uiQwenVae, DEFAULT_CONFIG.uiQwenVae).trim() || DEFAULT_CONFIG.uiQwenVae,
+    uiTimeoutMs: asInt(raw.uiTimeoutMs, DEFAULT_CONFIG.uiTimeoutMs, 60000, 3600000),
+    comfyOutputDir: asString(raw.comfyOutputDir, DEFAULT_CONFIG.comfyOutputDir).trim().replace(/[\\/]+$/u, ""),
 
     musicProvider: "puyue",
     musicApiKey: asString(raw.musicApiKey, DEFAULT_CONFIG.musicApiKey),
