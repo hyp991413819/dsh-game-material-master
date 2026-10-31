@@ -891,7 +891,7 @@ function makeImageJob(overrides = {}) {
     prompt: "一只猫",
     suffix: "",
     refs: [],
-    settings: { count: 2, size: "2K", sizeMode: "global" },
+    settings: { count: 2, size: "2K", sizeMode: "global", backend: "", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } },
     keying: { enabled: false },
     log: [],
     items: [
@@ -971,8 +971,35 @@ if (typeof ImageModule === "function") {
     check("图片模块有全局输出尺寸输入框", byTag(idle.tree, "input").some((node) => node.props["data-testid"] === "image-global-size"));
     check("图片模块有「尺寸来源」选择器（默认跟随全局）", byTag(idle.tree, "select").some((node) => node.props["data-testid"] === "image-size-mode" && node.props.value === "global"));
     check("跟随全局时不显示任务尺寸输入框", !byTag(idle.tree, "input").some((node) => node.props["data-testid"] === "image-task-size"));
-    const customSize = renderModule(ImageModule, makeImageJob({ settings: { count: 2, size: "1024x1536", sizeMode: "custom" } }), makeTasks());
+    const customSize = renderModule(ImageModule, makeImageJob({ settings: { count: 2, size: "1024x1536", sizeMode: "custom", backend: "", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } } }), makeTasks());
     check("自定义尺寸时显示任务尺寸输入框", byTag(customSize.tree, "input").some((node) => node.props["data-testid"] === "image-task-size" && node.props.value === "1024x1536"));
+
+    // ── 生图后端页签：两个后端各有独立参数面板 ──────────────────────────
+    {
+      const tabsOf = (tree) => collect(tree, (node) => typeof node.props?.["data-testid"] === "string" && node.props["data-testid"].startsWith("image-backend-tab-"));
+      const tabIds = tabsOf(idle.tree).map((node) => node.props["data-testid"]);
+      check("图片任务面板有生图后端页签（跟随全局 / ComfyUI / ToAPIs）",
+        JSON.stringify(tabIds.sort()) === JSON.stringify(["image-backend-tab-comfyui", "image-backend-tab-global", "image-backend-tab-toapis"]),
+        JSON.stringify(tabIds));
+      check("默认停在「跟随全局」页签", tabsOf(idle.tree).find((node) => node.props["data-testid"] === "image-backend-tab-global")?.props?.["data-active"] === "true");
+      // 夹具的全局后端是 comfyui → 默认页签下应显示工作流，且不显示 ToAPIs 参数。
+      check("ComfyUI 页签下显示工作流下拉", collect(idle.tree, (node) => node.props?.["data-testid"] === "image-workflow-pick").length === 1);
+      check("ComfyUI 页签下不显示 ToAPIs 参数面板", collect(idle.tree, (node) => node.props?.["data-testid"] === "image-toapis-params").length === 0);
+
+      const toapisJob = makeImageJob({ settings: { count: 2, size: "2K", sizeMode: "global", backend: "toapis", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } } });
+      const toapisTree = renderModule(ImageModule, toapisJob, makeTasks()).tree;
+      check("ToAPIs 页签下显示 ToAPIs 参数面板", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-toapis-params").length === 1);
+      check("ToAPIs 页签下不显示工作流下拉", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-workflow-pick").length === 0);
+      check("ToAPIs 页签下不显示节点参数面板", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-workflow-params").length === 0);
+      check("ToAPIs 页签被标为当前", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-backend-tab-toapis")[0]?.props?.["data-active"] === "true");
+
+      // 两个后端的参数互不影响：ToAPIs 的任务里，ComfyUI 的 params 保持原样。
+      const mixed = makeImageJob({ settings: { count: 1, size: "2K", sizeMode: "global", backend: "comfyui", workflowId: "w1", params: { "3.seed": 999 }, toapis: { model: "gpt-image-2-vip", quality: "high", background: "transparent" } } });
+      const mixedTree = renderModule(ImageModule, mixed, makeTasks()).tree;
+      check("切回 ComfyUI 时工作流与参数仍在（互不覆盖）",
+        collect(mixedTree, (node) => node.props?.["data-testid"] === "image-workflow-pick")[0]?.props?.value === "w1");
+      check("ComfyUI 页签下 ToAPIs 参数不渲染但数据保留", mixed.settings.toapis.model === "gpt-image-2-vip");
+    }
 
     const gen = renderModule(ImageModule, makeImageJob(), makeTasks(["img:job"]));
     check("整批生成时两张图都被盖住", overlays(gen.tree).length >= 2, `${overlays(gen.tree).length} 个`);

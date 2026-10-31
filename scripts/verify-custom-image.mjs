@@ -21,7 +21,7 @@ process.env.DSH_HOME = HOME;
 await mkdir(join(HOME, "game-material-master"), { recursive: true });
 
 const { generateComfyImage, parseSizeSpec } = await import("../lib/customimage.js");
-const { generateImageWithProvider, imageProviderBlocker, imageProviderSummary, testCustomImage } = await import("../lib/imageprovider.js");
+const { generateImageWithProvider, imageBackendOf, imageModelOf, imageSizeOf, imageProviderBlocker, imageProviderSummary, testCustomImage } = await import("../lib/imageprovider.js");
 const { loadConfig, saveConfig, normalizeConfig } = await import("../lib/config.js");
 const { discoverWorkflowParams, applyWorkflowParams } = await import("../lib/workflowparams.js");
 const { normalizeWorkflows, pickWorkflow, addWorkflow, updateWorkflow, removeWorkflow, isWorkflowJson } = await import("../lib/workflows.js");
@@ -459,6 +459,98 @@ received.length = 0;
 comfyHistoryCalls = 0;
 const testResult = await testCustomImage();
 check("测试连接返回工作流名与字节数", testResult.model === "自检工作流" && testResult.bytes > 0, JSON.stringify(testResult));
+
+// ── 9. 任务级后端覆盖（页签）────────────────────────────────────────────
+section("9) 任务级后端覆盖");
+{
+  const cfg = await loadConfig();
+  check("不传 backend 时跟随全局", imageBackendOf(cfg, undefined) === cfg.imageProvider, String(imageBackendOf(cfg, undefined)));
+  check("传 toapis 时覆盖全局", imageBackendOf(cfg, "toapis") === "toapis");
+  check("传 comfyui 时覆盖全局", imageBackendOf({ ...cfg, imageProvider: "toapis" }, "comfyui") === "comfyui");
+  check("非法 backend 值回落到全局", imageBackendOf({ ...cfg, imageProvider: "toapis" }, "nope") === "toapis");
+
+  // 模型 / 尺寸都按**实际会用的那个后端**算，而不是全局。
+  check("模型按后端分派（comfyui → 工作流名）", imageModelOf(cfg, "comfyui") === "自检工作流", imageModelOf(cfg, "comfyui"));
+  check("模型按后端分派（toapis → ToAPIs 模型）", imageModelOf(cfg, "toapis") === cfg.toapisImageModel, imageModelOf(cfg, "toapis"));
+  check("尺寸按后端分派（comfyui → customSize）", imageSizeOf(cfg, "comfyui") === cfg.customSize);
+  check("尺寸按后端分派（toapis → toapisImageSize）", imageSizeOf(cfg, "toapis") === cfg.toapisImageSize);
+
+  // 阻塞判断：全局 comfyui 就绪时，任务选 toapis 仍要按 toapis 判。
+  await saveConfig({ toapisApiKey: "" });
+  const noKey = await loadConfig();
+  check(
+    "ComfyUI 就绪不影响 ToAPIs 的阻塞判断",
+    imageProviderBlocker(noKey, "comfyui") === undefined && imageProviderBlocker(noKey, "toapis") !== undefined,
+    `comfyui=${imageProviderBlocker(noKey, "comfyui")} toapis=${imageProviderBlocker(noKey, "toapis")}`
+  );
+  await saveConfig({ toapisApiKey: "tk" });
+}
+
+/**
+ * ToAPIs 的任务级覆盖必须**真的写进请求体**。
+ *
+ * 只测 `imageBackendOf` 这类纯函数不够 —— 覆盖值是经 `generateImageWithProvider`
+ * 合并进 config 再交给 `generateToapisImage` 的，中间任何一处漏了都表现为
+ * 「任务上填了模型，请求里还是全局那个」，而这**不报任何错**。
+ */
+section("9b) ToAPIs 任务级参数真的进了请求");
+{
+  let captured = null;
+  const toapisServer = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const json = (payload) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(payload));
+    };
+    if (req.method === "POST" && url.pathname.endsWith("/images/generations")) {
+      captured = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return json({ id: "t1", status: "completed", result: { data: [{ url: `http://127.0.0.1:${toapisPort}/out.png` }] } });
+    }
+    if (url.pathname === "/out.png") {
+      res.writeHead(200, { "Content-Type": "image/png" });
+      return res.end(PNG);
+    }
+    if (url.pathname.includes("/images/generations/")) {
+      return json({ id: "t1", status: "completed", result: { data: [{ url: `http://127.0.0.1:${toapisPort}/out.png` }] } });
+    }
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise((resolve) => toapisServer.listen(0, "127.0.0.1", resolve));
+  const toapisPort = toapisServer.address().port;
+
+  await saveConfig({
+    toapisBaseUrl: `http://127.0.0.1:${toapisPort}/v1`,
+    toapisApiKey: "tk",
+    toapisImageModel: "gpt-image-2-vip",
+    toapisImageQuality: "low",
+    toapisImageBackground: "auto",
+    toapisTimeoutMs: 15000
+  });
+
+  try {
+    await generateImageWithProvider({
+      prompt: "p", images: [], size: "1K", watermark: false,
+      backend: "toapis", toapisModel: "gpt-image-2", toapisQuality: "high", toapisBackground: "transparent"
+    });
+    check("任务级 ToAPIs 模型写进请求体", captured?.model === "gpt-image-2", String(captured?.model));
+    check("任务级 ToAPIs 质量写进请求体", captured?.quality === "high", String(captured?.quality));
+    check("任务级 ToAPIs 背景写进请求体", captured?.background === "transparent", String(captured?.background));
+
+    captured = null;
+    await generateImageWithProvider({ prompt: "p", images: [], size: "1K", watermark: false, backend: "toapis" });
+    check("不填时回落到全局模型", captured?.model === "gpt-image-2-vip", String(captured?.model));
+    check("不填时回落到全局质量", captured?.quality === "low", String(captured?.quality));
+    check("全局背景是 auto 时不发 background 字段", captured?.background === undefined, String(captured?.background));
+  } catch (error) {
+    check("ToAPIs 覆盖验证没有抛错", false, String(error?.message));
+  }
+  await new Promise((resolve) => toapisServer.close(resolve));
+  // 把全局后端改回去，免得影响后面的断言。
+  await saveConfig({ imageProvider: "comfyui", customBaseUrl: ORIGIN });
+}
 
 await saveConfig({ customBaseUrl: "" });
 check("地址空时阻塞说明点名去哪配", /设置/.test(String(imageProviderBlocker(await loadConfig()))), String(imageProviderBlocker(await loadConfig())));

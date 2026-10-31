@@ -32,6 +32,12 @@ DSH 插件「游戏素材大师」：从一张角色设定图出发批量产出�
 `src/imageprovider.ts` 负责分发、`src/customimage.ts` 是 ComfyUI 客户端。
 所有生图调用点都必须走 `imageprovider.generateImageWithProvider`，**不要在模块里自己判 `imageProvider`**。
 
+**生图后端可以按任务切换**：`settings.backend`（空串 = 跟随全局），分派在
+`imageprovider.imageBackendOf(config, backend)`；`imageModelOf` / `imageSizeOf` /
+`imageProviderBlocker` 都接受这个可选参数 —— **阻塞判断要按「实际会用的那个后端」算**，
+否则全局 ComfyUI 就绪时任务选 ToAPIs 会带着空 Key 去提交。两个后端各有一套独立参数
+（`settings.params` vs `settings.toapis`），切换互不覆盖。
+
 **多工作流**存在 `config.workflows`（有序列表，永远非空）+ `config.activeWorkflowId`；
 增删改与「删空补一份」的逻辑在 `src/workflows.ts`，**别在界面里各写一套**。
 **工作流参数**由 `src/workflowparams.ts` 从 ComfyUI 的 `/object_info` 现场发现，
@@ -125,7 +131,7 @@ node scripts/verify-pipeline.mjs   # 抽帧 / 抠像 / 合成（40 项）
 node scripts/verify-feedback.mjs   # 浏览器半区真渲染（217 项，含功能管理、侧栏菜单、生图后端设置页、语义保存错误与草稿合并）
 node scripts/verify-i18n.mjs       # 中英词条表契约（9 项）
 node scripts/verify-comfy.mjs      # 本地 ComfyUI 后端（124 项，自起 mock ComfyUI，纯本地、不用装 ComfyUI）
-node scripts/verify-custom-image.mjs  # ComfyUI 生图后端（80 项：起本地假服务端，覆盖提交/轮询/取图、占位符类型、参数发现与应用、多工作流，离线零计费）
+node scripts/verify-custom-image.mjs  # ComfyUI 生图后端（95 项：起本地假服务端，覆盖提交/轮询/取图、占位符类型、参数发现与应用、多工作流，离线零计费）
 node scripts/verify-toapis.mjs       # ToAPIs 可选异步图片 / 视频后端（43 项，mock HTTP、零付费调用）
 node scripts/verify-music.mjs      # 音乐生成编辑：mock 谱乐 AI 的生成/轮询/下载/编辑/导出/工具/路由（86 项）
 node scripts/verify-music-score.mjs   # 谱曲模式：方案 / 假 Python / 内置试听 / 乐谱包 / Suno 上传+cover mock（46 项，纯本地）
@@ -223,6 +229,7 @@ Conventional Commits，中文描述：`feat(rig): …` / `docs: …` / `fix(spri
 | `0.12.2` | 2026-10-31 13:15 | **游戏 UI 生成的抠图方案换成 WeVisOne-VL**（`feat(ui)`）：`sliceSettings.matte` 从 `birefnet` / `qwen` 改为 **`wevisone`（默认）** / `qwen`，老数据的 `birefnet` 自动迁移成 `wevisone`。接线换成本机 ComfyUI 的 `WeVisOne_Layout_Matte_Slice`：`model` 是**字符串权重目录名**（不是 MODEL 连线），整个工作流没有 UNET / CLIP / VAE 节点，也没有 `per_element` / `resolution`（那两个是 BiRefNet / Qwen 的参数）；`keep_loaded:false` 是有意的 —— UI 一次一批，留着白占 4.6 GB 显存。配置项 `uiBirefnetModel` → `uiWevisoneModel`（默认 `WeVisOne-VL-2B`）。**默认值改对了**：同一张 1024×1024 源图上做 A/B，WeVisOne 与源图的 RGB 偏差只有 **0.52 / 2.43**（逐像素忠实，秒级），Qwen 是 **30.11 / 45.02**（把元素重画一遍：宝箱变饱和蓝、按钮变亮黄、金边被吃掉，标题框还把下方金色分隔装饰一起画了进来），且 Qwen 两个框共 **29.5 分钟**、WeVisOne 只要 **4 秒**。⚠️ 上一版差点改错：当时用**两次不同的 MOSS 生图**分别跑两种抠图（MOSS 有随机性），把「那张源图本身糊」误判成「WeVisOne 对大面板不行」—— 换方案必须用**同一张源图**对照。新增 `scripts/probe-ui-matte.mjs`（A/B，占显卡）+ `probe-ui-matte-report.mjs`（只读，量 alpha 与 RGB 偏差，按 ±24px 搜最佳位移 —— 产物是紧裁的，按画框原点对齐会整体错位）。`verify-ui` 73 → **82**。`package.json` 的 description 与 keywords 同步补上模块九。⚠️ 宿主半区改动，需重启 DSH。 |
 | `0.13.0` | 2026-11-01 00:20 | **图片生成功能重构：生图后端只留 ComfyUI，并支持多工作流 + 参数面板**（`feat(image)!`）。① **删掉火山方舟 Seedream 与 OpenAI / SD WebUI 两种自定义协议**，生图后端只剩 **ComfyUI**（默认）与 **ToAPIs**；老配置里的 `imageProvider: "ark"` / `"custom"` 由 `normalizeConfig` 归一到 `comfyui`，不会启动失败。删掉 26 个配置项（`arkApiKey` / `arkModel` / `arkSize` / `arkWatermark` / `arkRedrawModel` / `arkBaseUrl` / `arkTimeoutMs` / `customProtocol` / `customModel` / `customWorkflow` 等）与远程方法 `testArk`。② **多工作流**：`config.workflows`（有序列表，**永远非空**）+ `activeWorkflowId`，设置页里可改名 / 另存 / 删除，**图片生成任务面板上直接切换**；逻辑集中在新增的 `src/workflows.ts`（`normalizeWorkflows` / `pickWorkflow` / `addWorkflow` / `updateWorkflow` / `removeWorkflow` / `isWorkflowJson`）。③ **工作流参数面板**：新增 `src/workflowparams.ts`，从 ComfyUI 的 **`/object_info` 现场发现**每个节点的可设置输入（类型 / 取值范围 / 枚举候选 / 多行文本），任务面板据此渲染数字框 / 下拉框 / 开关 / 文本框；新增远程方法 `getWorkflowParams`（wire 200 → **201**）。参数**只存用户改过的那些**（`settings.params`，`节点id.输入名` → 值），改工作流后老任务跟着用新版。④ **两处容易静默坏的坑**：参数类型必须按**节点定义**判定、不能按工作流里的当前值（那些槽位还是 `"{{seed}}"` 字符串占位符，按值猜会把数字写成字符串，ComfyUI 的 int 输入直接报 type 错误）；`loadConfig` 首次启动的 catch 分支也必须走一遍 `normalizeConfig`，否则 `workflows` 停在空数组，第一次装插件的人会看到一个没有工作流可选、也点不动的生图面板。⑤ 新增内置默认生图工作流 `DEFAULT_COMFY_IMAGE_WORKFLOW`（SDXL 那一套，节点都是 ComfyUI 自带）。自检：host 405 / client 363 / tools 197 / i18n 9 / feedback 242 / custom-image **74**（重写成只测 ComfyUI + 多工作流 + 参数发现）/ comfy 124 / ui 82 / ui-client 21。⚠️ 宿主半区改动，需重启 DSH。 |
 | `0.13.1` | 2026-11-01 00:45 | **提示词没写占位符时不生效**（`fix(image)`）：用户从 ComfyUI 导出的工作流里，提示词往往是**写死的字符串**（他试跑时填的那句），一个 `{{prompt}}` 都没有。插件只替换占位符、不碰写死的值，表现是**任务面板上填的提示词完全不生效、每次出同一张图、不报任何错**。现在 `customimage.patchPromptByTopology` 会**顺着采样器的 `positive` 连线**找到文本编码节点写进去 —— 不能扫「所有字符串输入」，那会把 `ckpt_name` / `lora_name` 一起改坏；正负向接在同一个节点上时（Qwen 系常见）**只写正向**，否则第二次写会把正向覆盖成负面提示词。实在找不到就回 `warnings`，由 `imagegen` 写进任务日志（`warn` 级）—— 这种情况图照样出得来，不告警用户完全看不出来。兜底放在**参数面板之后**：面板里显式改过提示词的人那个值应该赢。`verify-custom-image` 74 → **80**（新增提示词兜底 6 条：顺拓扑替换 / 同节点只写正向 / 找不到时告警 / 正负向分开时两条都写 / 不碰模型文件名）。⚠️ 宿主半区改动，需重启 DSH。 |
+| `0.14.0` | 2026-11-01 01:55 | **生图面板加后端页签：ComfyUI / ToAPIs 各有一套独立参数**（`feat(image)`）。图片任务面板顶部新增三个页签：**跟随全局 / ComfyUI / ToAPIs**，选择记在 `settings.backend`（空串 = 跟随全局）。做成**任务级**而不是只改全局，是因为同一个人经常「这张用本机 ComfyUI、那张用 ToAPIs」，每换一次都跑回设置页改全局会把**别的任务**一起改掉。两个后端各有**一整套独立参数**、切换互不覆盖：ComfyUI 是 `settings.workflowId` + `settings.params`，ToAPIs 是 `settings.toapis.{model,quality,background}`。**页签决定渲染哪一组** —— ToAPIs 页签下不渲染「工作流」「节点参数」（那些控件在那条路上没用，摆出来只会让人以为调了有效）。分派集中在 `imageprovider.imageBackendOf(config, backend)`；`imageModelOf` / `imageSizeOf` / `imageProviderBlocker` 都接受这个可选参数 —— **阻塞判断必须按「实际会用的那个后端」算**，否则全局 ComfyUI 就绪时任务选 ToAPIs 会带着空 Key 去提交。ToAPIs 的覆盖值经 `generateImageWithProvider` 合并进 config 再交给 `generateToapisImage`，只把用户确实改过的盖上去（空串在调用方已转成 `undefined`）。`verify-feedback` 242 → **252**（10 条页签断言：三个页签存在 / 默认跟随全局 / ComfyUI 下显示工作流且不显示 ToAPIs 参数 / ToAPIs 下反之 / 切回来时两套参数都还在）；`verify-custom-image` 80 → **95**（15 条：后端选择与回落、模型/尺寸按后端分派、按后端算阻塞、**用假服务端抓请求体**验证 ToAPIs 的模型/质量/背景真的写进去了、不填时回落全局）。⚠️ 宿主半区改动，需重启 DSH。 |
 
 `package.json` 是 `0.11.0`。相对已发布的 `0.10.2`，这次把两套地图编辑器从「Agent 能调写入接口」补成
 「**读状态 → 出方案 → 批量执行 → 看效果图 → 校验 / 迭代**」的完整闭环，并顺带修掉几处真机反馈。

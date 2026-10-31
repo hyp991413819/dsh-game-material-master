@@ -634,6 +634,35 @@ dsh --profile gmmweb --port 19388     # 打印 http://127.0.0.1:19388/?token=…
 ComfyUI 的模型由工作流里的 `CheckpointLoaderSimple.ckpt_name` 决定，
 插件没有一个全局的「模型」概念，界面角标显示工作流名比显示空字符串有用。
 
+### 任务级后端切换（生图面板的页签）
+
+生图面板顶部有三个页签：**跟随全局 / ComfyUI / ToAPIs**。选择记在
+`settings.backend`（空串 = 跟随 `config.imageProvider`）。
+
+为什么要做成**任务级**而不是只改全局：同一个人经常「这张用本机 ComfyUI、
+那张用 ToAPIs」，每换一次都跑回设置页改全局，会把**别的任务**一起改掉。
+
+两个后端各有**一整套独立参数**，切换时互不覆盖：
+
+| 后端 | 参数 | 存哪 |
+|---|---|---|
+| ComfyUI | 工作流选择 + 节点参数 | `settings.workflowId` / `settings.params` |
+| ToAPIs | 模型 / 质量 / 背景 | `settings.toapis.{model,quality,background}` |
+
+**页签决定显示哪一组**（`activeBackend`），所以 ToAPIs 页签下不渲染「工作流」
+「节点参数」—— 那些控件在那条路上完全没用，摆出来只会让人以为调了有效。
+
+分派集中在 `imageprovider.imageBackendOf(config, backend)`：
+显式传入的（任务级）优先，否则跟随全局。`imageModelOf` / `imageSizeOf` /
+`imageProviderBlocker` **都接受这个可选参数** —— 阻塞判断尤其重要：
+全局 ComfyUI 就绪时，任务选了 ToAPIs 仍要按 ToAPIs 判（没配 Key 就该拦住），
+否则会带着空 Key 去提交，报错离现场很远。
+
+ToAPIs 的覆盖值经 `generateImageWithProvider` 合并进 config 再交给
+`generateToapisImage`：只把**用户确实改过的**盖上去（空串在调用方已转成
+`undefined`）。这条链任何一处漏了都表现为「任务上填了模型，请求里还是全局那个」，
+而且**不报任何错** —— `verify-custom-image` 的 9b 段用假服务端抓请求体盯住它。
+
 ### 多工作流（`src/workflows.ts`）
 
 以前只有一个 `customWorkflow` 字符串 —— 想同时留着「文生图」「带参考图」两份就得来回覆盖粘贴，
@@ -2329,7 +2358,7 @@ node scripts/dsh-web-cookie.mjs 127.0.0.1:43121 --json
 | `node scripts/e2e-ui.mjs` | 模块九**真实链路端到端**（**会占显卡几分钟**，零计费）：真调本机 ComfyUI 跑 MOSS-Image 生图 → 按画框切图（默认 `wevisone`）→ 导出 zip，产物留在 `<DSH_HOME>/game-material-master/ui-jobs/` 并打印绝对路径。先跑 `testUiConnection` 确认节点包与权重都在，缺什么直接点名 |
 | `node scripts/probe-ui-matte.mjs` + `probe-ui-matte-report.mjs` | 抠图方案 **A/B 对照工具**（不是自检；`probe` 会占显卡、`report` 只读）。`probe` 拿**同一张**已渲染的 MOSS 图，把 `wevisone` / `qwen` 各跑一遍落到 `output/gmm_ab_*/`；`report` 用内置 PNG 解码量 **alpha 分布 / 内部不透明度 / 与源图的 RGB 偏差**。⚠️ 这两个脚本存在的理由：曾用**两次不同的 MOSS 生图**分别跑两种抠图，把「源图本身模糊」误判成「WeVisOne 对大面板不行」—— 同一张清晰源图上 WeVisOne 的 RGB 偏差只有 **0.52**（逐像素忠实），Qwen 是 **30.11**（重绘并偏色）。**换抠图方案必须用同一张源图对照** |
 | `node scripts/e2e-map.mjs` | 模块六**真实链路端到端**（不联网、不花钱）：内置素材（5 张，含 4 张 A2）→ 再合成导入一张 A2 与一张普通图 → 画满 24×24（自动连接长边）→ 叠一层普通图块 → 断言计划里「一格四条 op」→ 查一次跨边界的视口（环绕时 `visibleKeys` 会出现负数 key）→ 撤销 / 重做 → 一键生成三种地图 → 预览 → 导出，**故意留下产物**并打印绝对路径，方便人眼验收 |
-| `node scripts/verify-custom-image.mjs` | **ComfyUI 生图后端**（**80 项**）：起一台本地假 ComfyUI，断言的重点不是「有没有返回字节」而是**请求真的长对了** —— 端点与顺序（上传参考图 → `/prompt` → `/history` → `/view`）、**占位符按 JSON 类型替换**（`{{width}}` 必须是数字）、参考图上传后文件名写进工作流（没写 `{{image}}` 时改 `LoadImage`）、四条失败路径（提交被拒 / 执行报错带节点名 / 空工作流 / 非法 JSON）、**参数发现与应用**（类型 / 范围 / 枚举候选来自节点定义，且**参数面板的值赢过占位符**），以及一条反向验证：**没给类型声明时会写错类型** —— 这条记录了「为什么必须传 declared」。另含多工作流六个纯函数（增 / 改名 / 删 / 删空补一份 / 丢非法 / 修重复 id）与配置归一化（老 `ark` / `custom` 归一到 `comfyui`、`customWorkflow` 迁移成列表一份）。 |
+| `node scripts/verify-custom-image.mjs` | **ComfyUI 生图后端**（**95 项**）：起一台本地假 ComfyUI，断言的重点不是「有没有返回字节」而是**请求真的长对了** —— 端点与顺序（上传参考图 → `/prompt` → `/history` → `/view`）、**占位符按 JSON 类型替换**（`{{width}}` 必须是数字）、参考图上传后文件名写进工作流（没写 `{{image}}` 时改 `LoadImage`）、四条失败路径（提交被拒 / 执行报错带节点名 / 空工作流 / 非法 JSON）、**参数发现与应用**（类型 / 范围 / 枚举候选来自节点定义，且**参数面板的值赢过占位符**），以及一条反向验证：**没给类型声明时会写错类型** —— 这条记录了「为什么必须传 declared」。另含多工作流六个纯函数（增 / 改名 / 删 / 删空补一份 / 丢非法 / 修重复 id）与配置归一化（老 `ark` / `custom` 归一到 `comfyui`、`customWorkflow` 迁移成列表一份）。 |
 | `node scripts/verify-comfy.mjs` | 本地 ComfyUI 后端（**124 项**，纯本地、不联网、不花钱、**不需要真装 ComfyUI**）：脚本自己用 `node:http` 在随机端口起一个 mock，覆盖地址归一化与注入点解析、`parseComfyWorkflow` 的 **UI 格式自动转换**（官方 All-in-One 形状的夹具：控件值按 `widgets_values` 顺序取、`randomize` 不当种子、连线写成 `[来源节点, 槽位]`、没连的 `first` 留给探测、便签与静音节点丢掉、`droppedWidgets` 计数、新版对象形式的 `links`）、探测的**四级顺序**（显式覆盖回退 / 已有字面量量 / 已有 `LoadImage` / `object_info` 声明的 optional IMAGE）、两个 `LoadImage` 时首尾各用其一、注入的纯函数性与「插入节点只写 `image` 一个键」、`first_frame_reference` 自动打开、无首帧位置报错、以及 HTTP 层（`/system_stats`、`/queue` 排队中、`/history` 执行失败带出 node_type、上传 multipart、`node_errors` / `error` 两条失败路径、从 outputs 挑 mp4 而不挑 png、只有图片时判失败、Cookie 的归一化与「每个请求都真的带上了这个头」） |
 | `node scripts/verify-host.mjs` | 宿主半区全链路（**387 项**）：六个模块的本地链路、**阶段①的转圈截帧（合成一段「转动」视频跑真实 ffmpeg，覆盖截帧位置、按比例换算、下游作废、切换生成方式）**、**换源图后由旧源图派生的产物整体作废（状态清空 + 磁盘文件真的删掉）**、**转圈首帧的时间兜底（正面图比源图旧时改用源图）**、**模块五的资源路由（真起一台 server 走 HTTP 取回 `iso-assets` 的素材图，并验证 403 与目录穿越）**、资源路由（含 `turn/` 白名单）、预览页的 `text/html`、目录穿越与 id 前缀校验、**本地自选视频（真实 ffmpeg 造的 MP4 走 `uploadVideo`：容器嗅探 / 槽位校验 / 下游作废 / 转圈导入后自动抽帧 / 摘掉在跑的远端任务号）与中间图片 zip（自检里带一个真解包的 ZIP 读取器：逐条比 CRC 与长度、断言八方向图 / 转圈候选帧 / 绿幕帧 / 抠像帧 / 整图都在包里，并真起一台 server 把 zip 下载回来）** |
 | `node scripts/find-missing-i18n.mjs` | **工具**（不是断言）：列出所有还没进词条表的 `T("…")` 原文，直接输出可粘贴的条目 |
@@ -2347,7 +2376,7 @@ node scripts/verify-minimax.mjs    # MiniMax 协议层（85 项，含请求体�
 node scripts/verify-comfy.mjs      # 本地 ComfyUI 后端（124 项，自起 mock ComfyUI，纯本地不花钱）
 node scripts/verify-pipeline.mjs   # 抽帧/抠像/合成链路（40 项，含回归用例）
 node scripts/verify-host.mjs       # 宿主冒烟（387 项，真实 cordis + 真实 HTTP；含内置默认提示词的语言切换、hiddenModules 落盘与收敛、生图后端两组配置与阻塞判断、模块五资源路由）
-node scripts/verify-custom-image.mjs # ComfyUI 生图后端（80 项，本地假服务端；离线、零计费）
+node scripts/verify-custom-image.mjs # ComfyUI 生图后端（95 项，本地假服务端；离线、零计费）
 node scripts/verify-comfy.mjs      # 本地 ComfyUI 后端（124 项，自起 mock ComfyUI，纯本地、不用装 ComfyUI）
 node scripts/verify-client.mjs     # 浏览器半区契约（362 项：阶段 ctx 键必须被转发、每个生成类调用点都带 loading 反馈、转圈时间轴与八圆圈、手动装配的四个坑、拆件质检 / IK 约束组件、功能管理 / 侧栏菜单的文本与样式契约）
 node scripts/verify-feedback.mjs   # 浏览器半区渲染（203 项：真加载 lib/client.js，断言遮罩真的出现 / 空闲时真的不出现 / 转圈模式两种生成方式与八圆圈都在 / **「选择本地视频」入口真的在（label + 隐藏 file input，只收 video/*）与每一处「保存」链接（八方向图 / 条带 / 成片 / 预览带 / 整包出口），且没有产物时不渲染空链接** / 深链接点击真的切面板 / 隐藏模块后页签与菜单真的消失、设置页勾选真的写回宿主 / **生图后端：ark 与自定义两组同屏、协议下拉、ComfyUI 工作流文本框只在选中 ComfyUI 时出现、改工作流不立刻发请求** / 语义校验失败没有误报成功）

@@ -17,7 +17,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { imageJobsRoot, loadConfig } from "./config.js";
-import { generateImageWithProvider, imageModelOf, imageSizeOf, imageWatermarkOf, assertImageProviderReady } from "./imageprovider.js";
+import { generateImageWithProvider, imageBackendOf, imageModelOf, imageSizeOf, imageWatermarkOf, assertImageProviderReady } from "./imageprovider.js";
 import { decodeToRgba, mimeOf, toDataUri } from "./media.js";
 import { keyGreen } from "./chroma.js";
 import { encodePng } from "./png.js";
@@ -65,6 +65,17 @@ export interface ImageJob {
   settings: {
     model: string;
     /**
+     * 这个任务用哪个生图后端。
+     *
+     * 空串 = **跟随全局**（`config.imageProvider`），老任务都是这个口径。
+     * 非空时覆盖全局 —— 同一个人经常「这张用本机 ComfyUI、那张用 ToAPIs」，
+     * 每换一次都跑回设置页改全局，会把别的任务一起改掉。
+     *
+     * ⚠️ 两个后端各有**自己的一整套参数**（`comfy` / `toapis` 两组），
+     * 切换时互不覆盖：切回来时你上次调的值还在。
+     */
+    backend: "" | "comfyui" | "toapis";
+    /**
      * 尺寸来源：
      * - `global`（默认）：跟随「设置 → 输出尺寸」，全局改了任务跟着改；
      * - `custom`：只这个任务用自己的 `size`，不跟全局漂移。
@@ -75,10 +86,16 @@ export interface ImageJob {
     size: string;
     count: number;
     watermark: boolean;
-    /** 这个任务用哪份工作流（空 = 跟随全局当前那份）。 */
+    /** ComfyUI 专属：这个任务用哪份工作流（空 = 跟随全局当前那份）。 */
     workflowId: string;
-    /** 参数面板里改过的值（`节点id.输入名` → 值）。 */
+    /** ComfyUI 专属：参数面板里改过的值（`节点id.输入名` → 值）。 */
     params: Record<string, string | number | boolean>;
+    /** ToAPIs 专属参数；空串 = 跟随全局。 */
+    toapis: {
+      model: string;
+      quality: string;
+      background: "auto" | "transparent" | "opaque";
+    };
   };
   keying: KeyingSettings;
   items: ImageItem[];
@@ -137,13 +154,17 @@ export async function createImageJob(name: string): Promise<ImageJob> {
     refs: [],
     settings: {
       model: imageModelOf(config),
+      // 新任务默认**跟随全局后端**；用户可以在任务面板的页签上单独改。
+      backend: "",
       sizeMode: "global",
       size: imageSizeOf(config),
       count: 1,
       watermark: imageWatermarkOf(config),
-      // 新任务默认跟随全局当前那份工作流；参数全用工作流里的默认值。
+      // ComfyUI：跟随全局当前那份工作流；参数全用工作流里的默认值。
       workflowId: "",
-      params: {}
+      params: {},
+      // ToAPIs：全部跟随全局。
+      toapis: { model: "", quality: "", background: "auto" }
     },
     keying: {
       enabled: false,
@@ -235,6 +256,14 @@ function normalizeImageJob(raw: any): ImageJob {
       : [],
     settings: {
       model: typeof raw?.settings?.model === "string" ? raw.settings.model : "",
+      /**
+       * 老任务没有 `backend`：留空 = 跟随全局。
+       * 非法值也归到空串 —— 让 `imageProviderOf` 去回落到全局，而不是抛错。
+       */
+      backend:
+        raw?.settings?.backend === "comfyui" || raw?.settings?.backend === "toapis"
+          ? raw.settings.backend
+          : "",
       sizeMode: raw?.settings?.sizeMode === "custom" ? "custom" : "global",
       size: typeof raw?.settings?.size === "string" ? raw.settings.size : "2K",
       count: Math.min(8, Math.max(1, Number(raw?.settings?.count) || 1)),
@@ -255,7 +284,16 @@ function normalizeImageJob(raw: any): ImageJob {
                   typeof entry[1] === "string" || typeof entry[1] === "number" || typeof entry[1] === "boolean"
               )
             )
-          : {}
+          : {},
+      /** ToAPIs 专属参数；老任务没有这一段，一律跟随全局。 */
+      toapis: {
+        model: typeof raw?.settings?.toapis?.model === "string" ? raw.settings.toapis.model : "",
+        quality: typeof raw?.settings?.toapis?.quality === "string" ? raw.settings.toapis.quality : "",
+        background:
+          raw?.settings?.toapis?.background === "transparent" || raw?.settings?.toapis?.background === "opaque"
+            ? raw.settings.toapis.background
+            : "auto"
+      }
     },
     keying: {
       enabled: raw?.keying?.enabled === true,
@@ -314,23 +352,25 @@ export async function generateImageItem(jobId: string, index: number): Promise<v
   if (job === undefined) throw new Error(`任务不存在：${jobId}`);
   const config = await loadConfig();
   const prompt = buildPrompt(job);
-  if (prompt === "") throw new Error("提示词为空，请先填写");
-  assertImageProviderReady(config);
+  if (prompt === "") throw new Error("提示词不能为空，请先填写");
+  // 「这个任务用哪个后端」优先于全局；阻塞判断也要按**实际会用的那个**来。
+  const backend = imageBackendOf(config, job.settings.backend === "" ? undefined : job.settings.backend);
+  assertImageProviderReady(config, backend);
 
   // 生图模型同样是全局设置（设置 → 游戏素材大师 → 生图后端），任务只跟随、不覆盖。
-  job.settings.model = imageModelOf(config);
+  job.settings.model = imageModelOf(config, backend);
   /**
    * 尺寸只在「跟随全局」时取全局值；用户显式把任务改成「自定义」后，
    * 任务自己的 size 才是权威 —— 否则又会回到「改任务尺寸不生效」的老 bug。
    */
   if (job.settings.sizeMode !== "custom") {
     job.settings.sizeMode = "global";
-    job.settings.size = imageSizeOf(config);
+    job.settings.size = imageSizeOf(config, backend);
   }
 
   const item: ImageItem = job.items[index] ?? { index, status: "empty", source: "generated" };
   job.items[index] = { ...item, status: "running", error: undefined };
-  appendJobLog(job.log, "info", `开始生成第 ${index + 1} 张（尺寸 ${job.settings.size}）`);
+  appendJobLog(job.log, "info", `开始生成第 ${index + 1} 张（${backend === "toapis" ? "ToAPIs" : "ComfyUI"} · 尺寸 ${job.settings.size}）`);
   await writeImageJob(job);
 
   try {
@@ -338,13 +378,19 @@ export async function generateImageItem(jobId: string, index: number): Promise<v
     const result = await generateImageWithProvider({
       prompt,
       images: refs,
-      size: job.settings.size || imageSizeOf(config),
-      // 水印是方舟 / ToAPIs 系的参数（ComfyUI 忽略它）。任务上那份是旧版本留下的
+      size: job.settings.size || imageSizeOf(config, backend),
+      // 水印是 ToAPIs 系的参数（ComfyUI 忽略它）。任务上那份是旧版本留下的
       // 覆盖位，仍然尊重；与全局设置取或，两种写法都不会让水印「突然消失」。
       watermark: imageWatermarkOf(config) || job.settings.watermark === true,
-      // 空串 = 跟随全局当前那份；参数只传用户改过的那些。
+      // 任务级后端覆盖（空串 = 跟随全局）。
+      backend: job.settings.backend === "" ? undefined : job.settings.backend,
+      // ComfyUI 专属：空串 = 跟随全局当前那份；参数只传用户改过的那些。
       workflowId: job.settings.workflowId === "" ? undefined : job.settings.workflowId,
-      params: job.settings.params
+      params: job.settings.params,
+      // ToAPIs 专属：空串 / auto = 跟随全局。
+      toapisModel: job.settings.toapis.model === "" ? undefined : job.settings.toapis.model,
+      toapisQuality: job.settings.toapis.quality === "" ? undefined : job.settings.toapis.quality,
+      toapisBackground: job.settings.toapis.background === "auto" ? undefined : job.settings.toapis.background
     });
 
     const relative = `out/img-${String(index).padStart(2, "0")}.${result.ext}`;

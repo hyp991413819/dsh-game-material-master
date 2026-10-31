@@ -23,6 +23,9 @@ import { CustomImageError, generateComfyImage } from "./customimage.js";
 import { discoverWorkflowParams } from "./workflowparams.js";
 import { pickWorkflow } from "./workflows.js";
 
+/** 生图后端。与 `config.imageProvider` 同形，但任务级可以单独覆盖。 */
+export type ImageBackend = "comfyui" | "toapis";
+
 export interface ProviderImageRequest {
   prompt: string;
   /** 参考图：data URI 或 http(s) URL。 */
@@ -32,10 +35,16 @@ export interface ProviderImageRequest {
   /** 覆盖模型（部件重绘会用单独的模型）。省略 = 用配置里的当前模型。 */
   model?: string;
   timeoutMs?: number;
-  /** 用哪一份工作流（缺省 = 配置里的当前工作流）。 */
+  /** 任务级后端覆盖；省略 = 跟随 `config.imageProvider`。 */
+  backend?: ImageBackend;
+  /** ComfyUI：用哪一份工作流（缺省 = 配置里的当前工作流）。 */
   workflowId?: string;
-  /** 用户在工作流参数面板里改过的值（`节点id.输入名` → 值）。 */
+  /** ComfyUI：用户在工作流参数面板里改过的值（`节点id.输入名` → 值）。 */
   params?: Record<string, string | number | boolean>;
+  /** ToAPIs：任务级覆盖；省略 = 跟随全局。 */
+  toapisModel?: string;
+  toapisQuality?: string;
+  toapisBackground?: "transparent" | "opaque";
 }
 
 /** 所有后端同形的返回：图片字节 + 扩展名。 */
@@ -48,8 +57,19 @@ export interface ProviderImageResult {
   warnings?: string[];
 }
 
-export function isCustomProvider(config: Config): boolean {
-  return config.imageProvider === "comfyui";
+export function isCustomProvider(config: Config, backend?: ImageBackend): boolean {
+  return imageBackendOf(config, backend) === "comfyui";
+}
+
+/**
+ * 实际用哪个后端：显式传入的（任务级覆盖）优先，否则跟随全局。
+ *
+ * 任务级覆盖是这次改造的核心 —— 同一个人经常「这张用本机 ComfyUI、那张用 ToAPIs」，
+ * 每换一次都跑回设置页改全局会把别的任务一起改掉。
+ */
+export function imageBackendOf(config: Config, backend?: ImageBackend): ImageBackend {
+  if (backend === "comfyui" || backend === "toapis") return backend;
+  return config.imageProvider;
 }
 
 /**
@@ -59,25 +79,25 @@ export function isCustomProvider(config: Config): boolean {
  * 没有一个全局的「模型名」——所以这里回的是「当前工作流的名字」，
  * 界面拿它当角标显示，比显示一个空字符串有用。
  */
-export function imageModelOf(config: Config): string {
-  if (config.imageProvider === "toapis") return config.toapisImageModel;
+export function imageModelOf(config: Config, backend?: ImageBackend): string {
+  if (imageBackendOf(config, backend) === "toapis") return config.toapisImageModel;
   return pickWorkflow(config.workflows, config.activeWorkflowId)?.name ?? "";
 }
 
 /** 当前输出尺寸。 */
-export function imageSizeOf(config: Config): string {
-  if (config.imageProvider === "toapis") return config.toapisImageSize;
+export function imageSizeOf(config: Config, backend?: ImageBackend): string {
+  if (imageBackendOf(config, backend) === "toapis") return config.toapisImageSize;
   return config.customSize;
 }
 
 /** 当前水印开关。水印是 ToAPIs / 方舟系的参数，ComfyUI 一律不带。 */
-export function imageWatermarkOf(config: Config): boolean {
+export function imageWatermarkOf(config: Config, _backend?: ImageBackend): boolean {
   return false;
 }
 
 /** 当前请求超时。 */
-export function imageTimeoutOf(config: Config): number {
-  return config.imageProvider === "toapis" ? config.toapisTimeoutMs : config.customTimeoutMs;
+export function imageTimeoutOf(config: Config, backend?: ImageBackend): number {
+  return imageBackendOf(config, backend) === "toapis" ? config.toapisTimeoutMs : config.customTimeoutMs;
 }
 
 /**
@@ -86,8 +106,8 @@ export function imageTimeoutOf(config: Config): number {
  * ComfyUI 侧同样由工作流决定，所以跟主模型一致；
  * 需要不同的重绘参数就在工作流列表里另存一份、由调用方传 `workflowId`。
  */
-export function imageRedrawModelOf(config: Config): string {
-  return imageModelOf(config);
+export function imageRedrawModelOf(config: Config, backend?: ImageBackend): string {
+  return imageModelOf(config, backend);
 }
 
 /** 所有后端都使用同一份全局输出尺寸（保留此函数是为了兼容旧调用方）。 */
@@ -112,8 +132,8 @@ export function customImageBlocker(config: Config): string | undefined {
  * 错误文案里必须写清**去哪里配**：两种后端的用户不是同一批人，
  * 只说「未配置」会让人在设置页里来回找。
  */
-export function imageProviderBlocker(config: Config): string | undefined {
-  if (config.imageProvider === "toapis") {
+export function imageProviderBlocker(config: Config, backend?: ImageBackend): string | undefined {
+  if (imageBackendOf(config, backend) === "toapis") {
     try {
       assertToapisReady(config);
       return undefined;
@@ -124,14 +144,14 @@ export function imageProviderBlocker(config: Config): string | undefined {
   return customImageBlocker(config);
 }
 
-export function assertImageProviderReady(config: Config): void {
-  const blocker = imageProviderBlocker(config);
+export function assertImageProviderReady(config: Config, backend?: ImageBackend): void {
+  const blocker = imageProviderBlocker(config, backend);
   if (blocker !== undefined) throw new Error(blocker);
 }
 
 /** 一句话摘要（界面角标与工具面共用）。 */
-export function imageProviderSummary(config: Config): string {
-  if (config.imageProvider === "toapis") return `ToAPIs · ${config.toapisImageModel}`;
+export function imageProviderSummary(config: Config, backend?: ImageBackend): string {
+  if (imageBackendOf(config, backend) === "toapis") return `ToAPIs · ${config.toapisImageModel}`;
   const workflow = pickWorkflow(config.workflows, config.activeWorkflowId);
   // 工作流列表理论上永远非空（见 workflows.normalizeWorkflows），但这里是**读配置的
   // 每一条路径都会走到**的地方：夹具 / 老数据 / 半截配置都可能让它是空的，
@@ -140,11 +160,24 @@ export function imageProviderSummary(config: Config): string {
   return `ComfyUI · ${config.customBaseUrl} · ${name}`;
 }
 
-/** 调一次生图，自动按当前后端分发。 */
+/** 调一次生图，自动按当前后端分发（任务级 `backend` 覆盖全局）。 */
 export async function generateImageWithProvider(request: ProviderImageRequest, signal?: AbortSignal): Promise<ProviderImageResult> {
   const config = await loadConfig();
-  assertImageProviderReady(config);
-  if (config.imageProvider === "toapis") return generateToapisImage(config, request, signal);
+  const backend = imageBackendOf(config, request.backend);
+  assertImageProviderReady(config, backend);
+  if (backend === "toapis") {
+    /**
+     * 任务级 ToAPIs 参数：只把**用户确实改过的**盖上去。
+     * 空串 / auto 在调用方已经转成 `undefined`，所以这里直接取或即可。
+     */
+    const merged: Config = {
+      ...config,
+      toapisImageModel: request.toapisModel?.trim() || config.toapisImageModel,
+      toapisImageQuality: request.toapisQuality?.trim() ?? config.toapisImageQuality,
+      toapisImageBackground: request.toapisBackground ?? config.toapisImageBackground
+    };
+    return generateToapisImage(merged, request, signal);
+  }
 
   const workflow = pickWorkflow(config.workflows, request.workflowId ?? config.activeWorkflowId);
   /**

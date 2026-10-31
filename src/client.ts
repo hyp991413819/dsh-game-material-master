@@ -914,6 +914,12 @@
       "ToAPIs（视频）": "ToAPIs (video)",
       "图生视频三选一：MiniMax（云端，默认）、ToAPIs（云端异步）、本机 ComfyUI；勾选后两者之一会替换 MiniMax，取消勾选即回到 MiniMax。ToAPIs 的 Base URL / Key / 超时在「生图」里配置，图片与视频共用。": "Pick one video backend: MiniMax (cloud, default), ToAPIs (cloud, async) or local ComfyUI. Enabling either of the latter two replaces MiniMax; clear both to return to MiniMax. ToAPIs' Base URL, key and timeout are configured on the \"Images\" tab and shared by image and video.",
       "生图后端": "Image backend",
+      "ToAPIs 模型": "ToAPIs model",
+      "ToAPIs 质量": "ToAPIs quality",
+      "ToAPIs 背景": "ToAPIs background",
+      "留空 = 跟随全局": "Leave empty to follow the global setting",
+      "跟随全局": "Follow global",
+      "只有 GPT Image 系模型支持显式背景": "Only GPT Image models support an explicit background",
       "工作流（在 ComfyUI 里点「导出（API）」，把那份 JSON 整段粘贴）。可用占位符：{{prompt}} {{negative_prompt}} {{width}} {{height}} {{seed}} {{steps}} {{cfg}} {{sampler}} {{denoising}} {{model}} {{image}}；一个都不写就原样跑你保存的工作流。": "Workflow (in ComfyUI click Export (API) and paste the whole JSON). Placeholders: {{prompt}} {{negative_prompt}} {{width}} {{height}} {{seed}} {{steps}} {{cfg}} {{sampler}} {{denoising}} {{model}} {{image}}; write none to run the saved workflow as-is.",
       "工作流已保存": "Workflow saved",
       "保存工作流": "Save workflow",
@@ -16482,10 +16488,25 @@
       const [workflowParams, setWorkflowParams] = React.useState([]);
       const [workflowParamNote, setWorkflowParamNote] = React.useState(null);
       const effectiveWorkflowId = (settingsDraft.workflowId ?? "") || (globalConfig?.activeWorkflowId ?? "");
+      /**
+       * 这个任务实际用哪个后端：任务上选了就按任务的，否则跟随全局。
+       *
+       * 页签与参数面板都按它分派 —— ToAPIs 页签下不该出现「工作流」「节点参数」，
+       * 那些控件在 ToAPIs 那条路上完全没用，摆出来只会让人以为调了有效。
+       */
+      const activeBackend = (settingsDraft.backend === "comfyui" || settingsDraft.backend === "toapis")
+        ? settingsDraft.backend
+        : (globalConfig?.imageProvider === "toapis" ? "toapis" : "comfyui");
       React.useEffect(() => {
         let cancelled = false;
         const runLoad = async () => {
           if (api === undefined) return;
+          // 只有 ComfyUI 才需要读工作流参数；ToAPIs 下别白跑一次网络请求。
+          if (activeBackend !== "comfyui") {
+            setWorkflowParams([]);
+            setWorkflowParamNote(null);
+            return;
+          }
           try {
             const result = await api.getWorkflowParams({ workflowId: effectiveWorkflowId });
             if (cancelled) return;
@@ -16501,7 +16522,7 @@
         return () => {
           cancelled = true;
         };
-      }, [api, effectiveWorkflowId]);
+      }, [api, effectiveWorkflowId, activeBackend]);
       /** 参数的当前值：任务上改过就用任务的，否则用工作流里的默认值。 */
       const paramValue = (key) => {
         const overrides = settingsDraft.params ?? {};
@@ -16698,6 +16719,46 @@
                         if (suffixDraft !== (job.suffix ?? "")) void saveJob({ suffix: suffixDraft });
                       }
                     }),
+                    /**
+                     * 生图后端页签。
+                     *
+                     * 两个后端各有**一整套独立参数**（ComfyUI：工作流 + 参数面板；
+                     * ToAPIs：模型 / 质量 / 背景），切页签时互不影响 ——
+                     * 同一个人经常「这张用本机 ComfyUI、那张用 ToAPIs」，
+                     * 共用一组控件的话，改了一边另一边也跟着变。
+                     *
+                     * 选择是**任务级**的（`settings.backend`）：空串 = 跟随全局，
+                     * 这样改一个任务的页签不会把别的任务一起改掉。
+                     */
+                    h(
+                      "div",
+                      { className: "SPR_settingsNav", role: "tablist", "aria-label": T("生图后端") },
+                      [
+                        { key: "", text: T("跟随全局（{n0}）", { n0: globalConfig?.imageProvider === "toapis" ? "ToAPIs" : "ComfyUI" }) },
+                        { key: "comfyui", text: "ComfyUI" },
+                        { key: "toapis", text: "ToAPIs" }
+                      ].map((tab) =>
+                        h(
+                          "button",
+                          {
+                            key: tab.key === "" ? "global" : tab.key,
+                            type: "button",
+                            role: "tab",
+                            className: "SPR_settingsTab",
+                            "data-testid": `image-backend-tab-${tab.key === "" ? "global" : tab.key}`,
+                            "data-active": (settingsDraft.backend ?? "") === tab.key ? "true" : "false",
+                            "aria-selected": (settingsDraft.backend ?? "") === tab.key,
+                            onClick: () => {
+                              const next = { ...settingsDraft, backend: tab.key };
+                              setSettingsDraft(next);
+                              void saveJob({ settings: next });
+                            }
+                          },
+                          tab.text
+                        )
+                      )
+                    ),
+
                     h(
                       "div",
                       { className: "SPR_fields" },
@@ -16756,96 +16817,164 @@
                     ),
 
                     /**
-                     * 工作流切换 + 参数面板。
+                     * ComfyUI 专属面板：工作流切换 + 参数。
                      *
-                     * 工作流在这里就能换（不必回设置页），参数**从 ComfyUI 的节点定义现场读**，
-                     * 所以换一份工作流之后下面这组控件会跟着变 ——
-                     * 手写清单一定会和实际工作流脱节，而脱节的表现是「调了没反应」，不报错。
+                     * 只在 ComfyUI 页签下显示 —— ToAPIs 那边没有「工作流」这个概念，
+                     * 把它摆出来只会让人以为调了有用。
                      */
-                    h(
-                      "label",
-                      { className: "SPR_field" },
-                      h("span", { className: "SPR_fieldLabel" }, T("工作流")),
-                      h(
-                        "select",
-                        {
-                          className: "SPR_input",
-                          "data-testid": "image-workflow-pick",
-                          value: settingsDraft.workflowId ?? "",
-                          onChange: (event) => {
-                            const next = { ...settingsDraft, workflowId: event.target.value, params: {} };
-                            setSettingsDraft(next);
-                            void saveJob({ settings: next });
-                          }
-                        },
-                        h("option", { value: "" }, T("跟随全局（{n0}）", { n0: globalConfig?.imageModel ?? "—" })),
-                        (globalConfig?.workflows ?? []).map((entry) => h("option", { key: entry.id, value: entry.id }, entry.name))
-                      ),
-                      h("span", { className: "SPR_fieldLabel" }, T("在「设置 → 游戏素材大师 → ComfyUI 生图」里管理这些工作流"))
-                    ),
+                    activeBackend === "comfyui"
+                      ? h(
+                          React.Fragment,
+                          null,
+                          h(
+                            "label",
+                            { className: "SPR_field" },
+                            h("span", { className: "SPR_fieldLabel" }, T("工作流")),
+                            h(
+                              "select",
+                              {
+                                className: "SPR_input",
+                                "data-testid": "image-workflow-pick",
+                                value: settingsDraft.workflowId ?? "",
+                                onChange: (event) => {
+                                  const next = { ...settingsDraft, workflowId: event.target.value, params: {} };
+                                  setSettingsDraft(next);
+                                  void saveJob({ settings: next });
+                                }
+                              },
+                              h("option", { value: "" }, T("跟随全局（{n0}）", { n0: globalConfig?.imageModel ?? "—" })),
+                              (globalConfig?.workflows ?? []).map((entry) => h("option", { key: entry.id, value: entry.id }, entry.name))
+                            ),
+                            h("span", { className: "SPR_fieldLabel" }, T("在「设置 → 游戏素材大师 → ComfyUI 生图」里管理这些工作流"))
+                          ),
 
-                    workflowParams.length === 0
-                      ? null
-                      : h(
-                          "div",
-                          { className: "SPR_fields", "data-testid": "image-workflow-params" },
-                          workflowParams.map((param) =>
-                            param.kind === "boolean"
-                              ? h(
-                                  "label",
-                                  { key: param.key, className: "SPR_field" },
-                                  h("span", { className: "SPR_fieldLabel" }, `${param.nodeTitle} · ${param.label}`),
-                                  h(
-                                    "select",
-                                    {
-                                      className: "SPR_input",
-                                      "data-testid": `image-param-${param.key}`,
-                                      value: paramValue(param.key) === true ? "true" : "false",
-                                      onChange: (event) => void saveParam(param.key, event.target.value === "true")
-                                    },
-                                    h("option", { value: "true" }, T("开")),
-                                    h("option", { value: "false" }, T("关"))
-                                  )
+                          workflowParams.length === 0
+                            ? null
+                            : h(
+                                "div",
+                                { className: "SPR_fields", "data-testid": "image-workflow-params" },
+                                workflowParams.map((param) =>
+                                  param.kind === "boolean"
+                                    ? h(
+                                        "label",
+                                        { key: param.key, className: "SPR_field" },
+                                        h("span", { className: "SPR_fieldLabel" }, `${param.nodeTitle} · ${param.label}`),
+                                        h(
+                                          "select",
+                                          {
+                                            className: "SPR_input",
+                                            "data-testid": `image-param-${param.key}`,
+                                            value: paramValue(param.key) === true ? "true" : "false",
+                                            onChange: (event) => void saveParam(param.key, event.target.value === "true")
+                                          },
+                                          h("option", { value: "true" }, T("开")),
+                                          h("option", { value: "false" }, T("关"))
+                                        )
+                                      )
+                                    : param.kind === "enum"
+                                      ? h(
+                                          "label",
+                                          { key: param.key, className: "SPR_field" },
+                                          h("span", { className: "SPR_fieldLabel" }, `${param.nodeTitle} · ${param.label}`),
+                                          h(
+                                            "select",
+                                            {
+                                              className: "SPR_input",
+                                              "data-testid": `image-param-${param.key}`,
+                                              value: String(paramValue(param.key) ?? ""),
+                                              onChange: (event) => void saveParam(param.key, event.target.value)
+                                            },
+                                            (param.options ?? []).map((option) => h("option", { key: option, value: option }, option))
+                                          )
+                                        )
+                                      : param.kind === "int" || param.kind === "float"
+                                        ? h(NumField, {
+                                            key: param.key,
+                                            label: `${param.nodeTitle} · ${param.label}`,
+                                            value: Number(paramValue(param.key)) || 0,
+                                            min: param.min ?? 0,
+                                            max: param.max ?? 2147483647,
+                                            step: param.step ?? (param.kind === "float" ? 0.01 : 1),
+                                            onChange: (value) => void saveParam(param.key, value)
+                                          })
+                                        : h(
+                                            "label",
+                                            { key: param.key, className: "SPR_field SPR_settingsWide" },
+                                            h("span", { className: "SPR_fieldLabel" }, `${param.nodeTitle} · ${param.label}`),
+                                            h("input", {
+                                              className: "SPR_input",
+                                              "data-testid": `image-param-${param.key}`,
+                                              value: String(paramValue(param.key) ?? ""),
+                                              onChange: (event) => void saveParam(param.key, event.target.value)
+                                            })
+                                          )
                                 )
-                              : param.kind === "enum"
-                                ? h(
-                                    "label",
-                                    { key: param.key, className: "SPR_field" },
-                                    h("span", { className: "SPR_fieldLabel" }, `${param.nodeTitle} · ${param.label}`),
-                                    h(
-                                      "select",
-                                      {
-                                        className: "SPR_input",
-                                        "data-testid": `image-param-${param.key}`,
-                                        value: String(paramValue(param.key) ?? ""),
-                                        onChange: (event) => void saveParam(param.key, event.target.value)
-                                      },
-                                      (param.options ?? []).map((option) => h("option", { key: option, value: option }, option))
-                                    )
-                                  )
-                                : param.kind === "int" || param.kind === "float"
-                                  ? h(NumField, {
-                                      key: param.key,
-                                      label: `${param.nodeTitle} · ${param.label}`,
-                                      value: Number(paramValue(param.key)) || 0,
-                                      min: param.min ?? 0,
-                                      max: param.max ?? 2147483647,
-                                      step: param.step ?? (param.kind === "float" ? 0.01 : 1),
-                                      onChange: (value) => void saveParam(param.key, value)
-                                    })
-                                  : h(
-                                      "label",
-                                      { key: param.key, className: "SPR_field SPR_settingsWide" },
-                                      h("span", { className: "SPR_fieldLabel" }, `${param.nodeTitle} · ${param.label}`),
-                                      h("input", {
-                                        className: "SPR_input",
-                                        "data-testid": `image-param-${param.key}`,
-                                        value: String(paramValue(param.key) ?? ""),
-                                        onChange: (event) => void saveParam(param.key, event.target.value)
-                                      })
-                                    )
+                              )
+                        )
+                      : null,
+
+                    /**
+                     * ToAPIs 专属面板：模型 / 质量 / 背景。
+                     *
+                     * 这三项在 `config` 里是全局的；任务上留空 = 跟随全局，
+                     * 填了就只影响这个任务（见 `generateImageWithProvider` 的合并逻辑）。
+                     */
+                    activeBackend === "toapis"
+                      ? h(
+                          "div",
+                          { className: "SPR_fields", "data-testid": "image-toapis-params" },
+                          h(
+                            "label",
+                            { className: "SPR_field" },
+                            h("span", { className: "SPR_fieldLabel" }, T("ToAPIs 模型")),
+                            h("input", {
+                              className: "SPR_input",
+                              "data-testid": "image-toapis-model",
+                              value: settingsDraft.toapis?.model ?? "",
+                              placeholder: globalConfig?.toapisImageModel ?? "",
+                              onChange: (event) => setSettingsDraft({ ...settingsDraft, toapis: { ...(settingsDraft.toapis ?? {}), model: event.target.value } }),
+                              onBlur: () => void saveJob({ settings: settingsDraft })
+                            }),
+                            h("span", { className: "SPR_fieldLabel" }, T("留空 = 跟随全局"))
+                          ),
+                          h(
+                            "label",
+                            { className: "SPR_field" },
+                            h("span", { className: "SPR_fieldLabel" }, T("ToAPIs 质量")),
+                            h("input", {
+                              className: "SPR_input",
+                              "data-testid": "image-toapis-quality",
+                              value: settingsDraft.toapis?.quality ?? "",
+                              placeholder: globalConfig?.toapisImageQuality ?? "",
+                              onChange: (event) => setSettingsDraft({ ...settingsDraft, toapis: { ...(settingsDraft.toapis ?? {}), quality: event.target.value } }),
+                              onBlur: () => void saveJob({ settings: settingsDraft })
+                            }),
+                            h("span", { className: "SPR_fieldLabel" }, T("留空 = 跟随全局"))
+                          ),
+                          h(
+                            "label",
+                            { className: "SPR_field" },
+                            h("span", { className: "SPR_fieldLabel" }, T("ToAPIs 背景")),
+                            h(
+                              "select",
+                              {
+                                className: "SPR_input",
+                                "data-testid": "image-toapis-background",
+                                value: settingsDraft.toapis?.background ?? "auto",
+                                onChange: (event) => {
+                                  const next = { ...settingsDraft, toapis: { ...(settingsDraft.toapis ?? {}), background: event.target.value } };
+                                  setSettingsDraft(next);
+                                  void saveJob({ settings: next });
+                                }
+                              },
+                              h("option", { value: "auto" }, T("跟随全局")),
+                              h("option", { value: "transparent" }, T("原生透明背景")),
+                              h("option", { value: "opaque" }, T("不透明背景"))
+                            ),
+                            h("span", { className: "SPR_fieldLabel" }, T("只有 GPT Image 系模型支持显式背景"))
                           )
-                        ),
+                        )
+                      : null,
                     h(
                       "div",
                       { className: "SPR_toolbar" },
