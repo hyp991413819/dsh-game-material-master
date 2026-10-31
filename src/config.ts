@@ -44,7 +44,8 @@ export function isLegacyRowOrder(order: unknown): boolean {
   );
 }
 import { COMP_SHARE_MODEL_ID, normalizeDuration, normalizeResolution, rootOf } from "./minimax.js";
-import { DEFAULT_COMFY_WORKFLOW_TEXT, normalizeComfyBaseUrl, normalizeComfyCookies } from "./comfy.js";
+import { DEFAULT_COMFY_IMAGE_WORKFLOW, DEFAULT_COMFY_WORKFLOW_TEXT, normalizeComfyBaseUrl, normalizeComfyCookies } from "./comfy.js";
+import { normalizeWorkflows, pickWorkflow, type SavedWorkflow } from "./workflows.js";
 
 export function dshHome(): string {
   const raw = process.env.DSH_HOME?.trim();
@@ -128,41 +129,20 @@ export async function migrateLegacyDataRoot(): Promise<boolean> {
 /**
  * 生图后端。
  *
- * `ark` = 火山方舟 Seedream（默认，也是唯一「开箱即用」的云端选择）；
- * `custom` = 用户自己的生图服务，协议再分 OpenAI / ComfyUI / Stable Diffusion WebUI。
+ * `comfyui`（默认，也是唯一保留的自定义协议）—— 本机 / 自建 ComfyUI；
+ * `toapis` —— ToAPIs 异步接口（云端，保留）。
+ *
  * 换后端只改这一个字段：所有生图调用点都走 `imageprovider.generateImageWithProvider`。
  */
-export const IMAGE_PROVIDERS = ["ark", "custom", "toapis"] as const;
+export const IMAGE_PROVIDERS = ["comfyui", "toapis"] as const;
 export type ImageProvider = (typeof IMAGE_PROVIDERS)[number];
 
-/** 自定义生图服务的协议。 */
-export const CUSTOM_PROTOCOLS = ["openai", "comfyui", "sdwebui"] as const;
-export type CustomProtocol = (typeof CUSTOM_PROTOCOLS)[number];
-
-/**
- * 各协议的默认地址。
- *
- * 设置页在**协议切换**时会拿它做「原来那个地址还是默认值吗」的判断，
- * 是就顺手换成新协议的默认地址（和 MiniMax 切「优云智算版」同一套做法）——
- * 手动改过地址的用户不会被覆盖。
- */
-export const CUSTOM_PROTOCOL_DEFAULTS: Record<CustomProtocol, { baseUrl: string; label: string; hint: string }> = {
-  openai: {
-    baseUrl: "https://api.openai.com/v1",
-    label: "OpenAI API",
-    hint: "POST {base}/images/generations（带参考图时优先 POST {base}/images/edits）"
-  },
-  comfyui: {
-    baseUrl: "http://127.0.0.1:8188",
-    label: "ComfyUI API",
-    hint: "POST {base}/prompt + GET {base}/history/{id} + GET {base}/view（需要用 API 格式的工作流 JSON）"
-  },
-  sdwebui: {
-    baseUrl: "http://127.0.0.1:7860",
-    label: "Stable Diffusion WebUI API",
-    hint: "POST {base}/sdapi/v1/txt2img（带参考图时走 /sdapi/v1/img2img，需要启动时加 --api）"
-  }
-};
+/** ComfyUI 的默认地址与说明（协议只剩它一个，不再有「协议切换」）。 */
+export const COMFYUI_PROVIDER_INFO = {
+  baseUrl: "http://127.0.0.1:8188",
+  label: "ComfyUI API",
+  hint: "POST {base}/prompt + GET {base}/history/{id} + GET {base}/view（需要用 API 格式的工作流 JSON）"
+} as const;
 
 export interface Config {
   toapisBaseUrl: string;
@@ -179,68 +159,48 @@ export interface Config {
   toapisTimeoutMs: number;
 
   /**
-   * 生图后端：`ark`（默认）或 `custom`。
+   * 生图后端：`comfyui`（默认）或 `toapis`。
    *
-   * ⚠️ 这个开关只影响**生图**。图生视频仍然只走 MiniMax。
+   * ⚠️ 这个开关只影响**生图**。图生视频见 `comfyVideo` / `toapisVideo`。
    */
   imageProvider: ImageProvider;
-  /** 自定义后端协议。 */
-  customProtocol: CustomProtocol;
+  /** ComfyUI 的根地址（不含端点）。 */
   customBaseUrl: string;
   customApiKey: string;
-  /** 自定义后端的模型名（SD WebUI 忽略它，模型由服务端自身决定）。 */
-  customModel: string;
-  /** 输出尺寸。OpenAI / ComfyUI 用 `宽x高` 或 `1K`/`2K`/`4K`；SD WebUI 只认 `宽x高`。 */
+  /** 输出尺寸。ComfyUI 用 `宽x高` 或 `1K`/`2K`/`4K`。 */
   customSize: string;
-  /** 负面提示词（SD WebUI 直传；ComfyUI 走 `{{negative_prompt}}` 占位符）。 */
+  /** 负面提示词（ComfyUI 走 `{{negative_prompt}}` 占位符）。 */
   customNegativePrompt: string;
   /** 采样步数（ComfyUI 走 `{{steps}}`）。 */
   customSteps: number;
   /** CFG / 提示词引导强度（ComfyUI 走 `{{cfg}}`）。 */
   customCfgScale: number;
-  /** 采样器名（SD WebUI 直传；ComfyUI 走 `{{sampler}}`）。 */
+  /** 采样器名（ComfyUI 走 `{{sampler}}`）。 */
   customSampler: string;
-  /**
-   * 图生图重绘强度 0~1（SD WebUI 的 `denoising_strength`，ComfyUI 走 `{{denoising}}`）。
-   * 越低越贴参考图、越高越听提示词。
-   */
+  /** 图生图重绘强度 0~1（ComfyUI 走 `{{denoising}}`）。越低越贴参考图、越高越听提示词。 */
   customDenoising: number;
   /** 随机种子；`-1` = 每次都随机。 */
   customSeed: number;
   /**
-   * ComfyUI 的工作流（**API 格式**的 JSON 文本，`POST /prompt` 里那个 `prompt` 字段）。
+   * **保存下来的工作流列表**（多份，可在任务面板上直接切换）。
    *
-   * 支持占位符，宿主会**按 JSON 类型**替换（不是字符串拼 JSON）：
-   * `{{prompt}}` / `{{negative_prompt}}` / `{{width}}` / `{{height}}` / `{{seed}}` /
-   * `{{steps}}` / `{{cfg}}` / `{{sampler}}` / `{{denoising}}` / `{{model}}` / `{{image}}`。
-   * 一个占位符都不写时，就原样跑用户保存的工作流（合法用法：固定工作流）。
+   * 每份是 API 格式的 JSON 文本，支持占位符（宿主**按 JSON 类型**替换，
+   * 不是字符串拼 JSON）：`{{prompt}}` / `{{negative_prompt}}` / `{{width}}` /
+   * `{{height}}` / `{{seed}}` / `{{steps}}` / `{{cfg}}` / `{{sampler}}` /
+   * `{{denoising}}` / `{{model}}` / `{{image}}`。
+   * 一个占位符都不写时就原样跑那份工作流（合法用法：固定工作流）。
+   *
+   * ⚠️ 列表**永远不空**，见 `workflows.normalizeWorkflows`。
    */
-  customWorkflow: string;
+  workflows: SavedWorkflow[];
+  /** 当前使用的工作流 id；失效时自动落到第一份。 */
+  activeWorkflowId: string;
   /**
    * 自定义后端的请求超时（毫秒）。
    *
-   * 默认给到 5 分钟：本地跑一张 SD 图经常要一两分钟，云端 3 分钟的超时在这里是常态失败。
+   * 默认给到 5 分钟：本地跑一张图经常要一两分钟，云端 3 分钟的超时在这里是常态失败。
    */
   customTimeoutMs: number;
-
-  /** 火山方舟（Ark）API Key。 */
-  arkApiKey: string;
-  arkBaseUrl: string;
-  /** 生图模型 ID，也支持推理接入点 ID（ep-xxxx）。 */
-  arkModel: string;
-  /**
-   * **部件重绘**单独用的模型 ID；空串 = 跟随 `arkModel`（默认）。
-   *
-   * 拆件与重绘对模型的要求本来就不同（一个是「按提示词画一整张摊平图」，
-   * 一个是「原地改这一小块、保持轮廓」），分开设置留出了切换空间。
-   * 默认跟随主模型——没有证据表明某个模型在这个任务上系统性更好。
-   */
-  arkRedrawModel: string;
-  /** `2K` / `1K` / `4K`，或显式 `宽x高`。 */
-  arkSize: string;
-  arkWatermark: boolean;
-  /** 请求超时（毫秒）。 */
-  arkTimeoutMs: number;
 
   /** MiniMax API Key。 */
   minimaxApiKey: string;
@@ -449,43 +409,20 @@ export const DEFAULT_CONFIG: Config = {
   toapisVideoResolution: "480p",
   toapisVideoAspectRatio: "16:9",
   toapisTimeoutMs: 600000,
-  imageProvider: "ark",
-  customProtocol: "openai",
-  customBaseUrl: CUSTOM_PROTOCOL_DEFAULTS.openai.baseUrl,
+  imageProvider: "comfyui",
+  customBaseUrl: COMFYUI_PROVIDER_INFO.baseUrl,
   customApiKey: "",
-  customModel: "gpt-image-1",
   customSize: "1024x1024",
   customNegativePrompt: "",
   customSteps: 28,
   customCfgScale: 7,
-  customSampler: "DPM++ 2M Karras",
+  customSampler: "euler",
   customDenoising: 0.65,
   customSeed: -1,
-  customWorkflow: "",
+  // 空列表会在 normalizeConfig 里被补成「内置默认工作流」那一份，见 workflows.ts。
+  workflows: [],
+  activeWorkflowId: "",
   customTimeoutMs: 300000,
-
-  arkApiKey: "",
-  arkBaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
-  /**
-   * 默认模型。
-   *
-   * ⚠️ **不要改回 `doubao-seedream-4-0-*`。** 实测（同一张洋红菱形模板 + 同一段
-   * 模板填充提示词，各一次调用）：
-   *
-   * | 模型 | 输出 | 菱形包围盒比例 | 结果是 |
-   * |---|---|---|---|
-   * | `doubao-seedream-4-0-250828` | **JPEG**（背景烧进 RGB） | **1.058** | 量不出菱形，只能回退模板几何 |
-   * | `doubao-seedream-5-0-flash-260915` | PNG | **1.987** | 测量可信，直接规整 |
-   *
-   * 4.0 会把「2:1 等距菱形」画成一个**接近正方形**的形状 —— 提示词里写满了
-   * 「顶点位置必须与参考图一致」也没用。地图地块模块依赖这个几何，所以 4.0 不可用。
-   */
-  arkModel: "doubao-seedream-5-0-flash-260915",
-  /** 默认跟随主模型；需要时可在设置里单独指定。 */
-  arkRedrawModel: "",
-  arkSize: "2K",
-  arkWatermark: false,
-  arkTimeoutMs: 180000,
 
   minimaxApiKey: "",
   minimaxBaseUrl: "https://api.minimaxi.com",
@@ -564,16 +501,6 @@ export const DEFAULT_CONFIG: Config = {
   concurrency: 3
 };
 
-export const ARK_MODEL_PRESETS = [
-  // 地图地块模块对几何很敏感：4.0 会把 2:1 等距菱形画成近正方形（实测比例 1.058），
-  // 所以它排在最后并明确标注不适合。见 DEFAULT_CONFIG.arkModel 的注释。
-  { id: "doubao-seedream-5-0-flash-260915", label: "Seedream 5.0 Flash（默认 · 快且几何准）" },
-  { id: "doubao-seedream-5-0-pro-260628", label: "Seedream 5.0 Pro（单图质量最好）" },
-  { id: "doubao-seedream-5-0-260128", label: "Seedream 5.0 Lite" },
-  { id: "doubao-seedream-4-5-251128", label: "Seedream 4.5" },
-  { id: "doubao-seedream-4-0-250828", label: "Seedream 4.0（⚠️ 不支持透明背景，会把等距菱形画变形，地图地块别用）" }
-];
-
 export const MINIMAX_HOST_PRESETS = [
   { id: "https://api.minimaxi.com", label: "国际站 api.minimaxi.com" },
   { id: "https://api.minimax.cn", label: "国内站 api.minimax.cn" }
@@ -650,6 +577,21 @@ export function normalizeConfig(input: unknown): Config {
   const comfyWorkflowRaw = asString(raw.comfyWorkflow, DEFAULT_CONFIG.comfyWorkflow);
   const comfyWorkflow = comfyWorkflowRaw.trim() === "" ? DEFAULT_CONFIG.comfyWorkflow : comfyWorkflowRaw;
 
+  /**
+   * 生图工作流列表（多份）。
+   *
+   * 一次性迁移：老配置只有一个 `customWorkflow` 字符串。它非空且能解析时，
+   * 变成列表里的第一份（名字叫「我的工作流」），用户不会因为升级而丢掉它。
+   * 之后再读到的 `workflows` 就是权威数据，`customWorkflow` 不再参与。
+   */
+  const legacyWorkflow = asString(raw.customWorkflow, "").trim();
+  const rawWorkflows = Array.isArray(raw.workflows) ? raw.workflows : [];
+  const seededWorkflows =
+    rawWorkflows.length === 0 && legacyWorkflow !== ""
+      ? [{ id: "wlegacy", name: "我的工作流（旧版迁移）", json: legacyWorkflow }]
+      : rawWorkflows;
+  const workflows = normalizeWorkflows(seededWorkflows, DEFAULT_COMFY_IMAGE_WORKFLOW);
+
   return {
     toapisBaseUrl: asString(raw.toapisBaseUrl, DEFAULT_CONFIG.toapisBaseUrl).trim(),
     toapisApiKey: asString(raw.toapisApiKey, DEFAULT_CONFIG.toapisApiKey).trim(),
@@ -663,13 +605,14 @@ export function normalizeConfig(input: unknown): Config {
     toapisVideoResolution: asString(raw.toapisVideoResolution, DEFAULT_CONFIG.toapisVideoResolution).trim(),
     toapisVideoAspectRatio: ["16:9","9:16","1:1","4:3","3:4","21:9"].includes(asString(raw.toapisVideoAspectRatio, "16:9")) ? asString(raw.toapisVideoAspectRatio, "16:9") : "16:9",
     toapisTimeoutMs: asInt(raw.toapisTimeoutMs, DEFAULT_CONFIG.toapisTimeoutMs, 10000, 3600000),
-    imageProvider: raw.imageProvider === "toapis" ? "toapis" : raw.imageProvider === "custom" ? "custom" : "ark",
-    customProtocol: (CUSTOM_PROTOCOLS as readonly string[]).includes(String(raw.customProtocol))
-      ? (raw.customProtocol as CustomProtocol)
-      : DEFAULT_CONFIG.customProtocol,
+    /**
+     * 生图后端只剩两家。老配置里的 `ark` / `custom`（以及任何未知值）
+     * 一律落到 `comfyui` —— 火山方舟那条链路已经删掉，
+     * 让它停在 `ark` 只会得到一个「后端不存在」的运行时错误。
+     */
+    imageProvider: raw.imageProvider === "toapis" ? "toapis" : "comfyui",
     customBaseUrl: asString(raw.customBaseUrl, DEFAULT_CONFIG.customBaseUrl).replace(/\/+$/, ""),
     customApiKey: asString(raw.customApiKey, DEFAULT_CONFIG.customApiKey),
-    customModel: asString(raw.customModel, DEFAULT_CONFIG.customModel),
     customSize: asString(raw.customSize, DEFAULT_CONFIG.customSize).trim() || DEFAULT_CONFIG.customSize,
     customNegativePrompt: asString(raw.customNegativePrompt, DEFAULT_CONFIG.customNegativePrompt),
     customSteps: asInt(raw.customSteps, DEFAULT_CONFIG.customSteps, 1, 150),
@@ -679,16 +622,9 @@ export function normalizeConfig(input: unknown): Config {
     customDenoising: asNumber(raw.customDenoising, DEFAULT_CONFIG.customDenoising, 0, 1),
     // -1 是「随机」的约定值，其余收敛到 32 位无符号范围（ComfyUI 的 KSampler 是 int）。
     customSeed: asInt(raw.customSeed, DEFAULT_CONFIG.customSeed, -1, 2147483647),
-    customWorkflow: asString(raw.customWorkflow, DEFAULT_CONFIG.customWorkflow),
+    workflows,
+    activeWorkflowId: pickWorkflow(workflows, asString(raw.activeWorkflowId, "")).id,
     customTimeoutMs: asInt(raw.customTimeoutMs, DEFAULT_CONFIG.customTimeoutMs, 10000, 3600000),
-
-    arkApiKey: asString(raw.arkApiKey, DEFAULT_CONFIG.arkApiKey),
-    arkBaseUrl: asString(raw.arkBaseUrl, DEFAULT_CONFIG.arkBaseUrl).replace(/\/+$/, ""),
-    arkModel: asString(raw.arkModel, DEFAULT_CONFIG.arkModel),
-    arkRedrawModel: asString(raw.arkRedrawModel, DEFAULT_CONFIG.arkRedrawModel),
-    arkSize: asString(raw.arkSize, DEFAULT_CONFIG.arkSize).trim() || DEFAULT_CONFIG.arkSize,
-    arkWatermark: asBool(raw.arkWatermark, DEFAULT_CONFIG.arkWatermark),
-    arkTimeoutMs: asInt(raw.arkTimeoutMs, DEFAULT_CONFIG.arkTimeoutMs, 10000, 900000),
 
     minimaxApiKey: asString(raw.minimaxApiKey, DEFAULT_CONFIG.minimaxApiKey),
     minimaxBaseUrl,
@@ -776,7 +712,14 @@ export async function loadConfig(): Promise<Config> {
     const text = await readFile(configPath(), "utf8");
     cache = normalizeConfig(JSON.parse(text));
   } catch {
-    cache = { ...DEFAULT_CONFIG, rowOrder: [...DEFAULT_ROW_ORDER], hiddenModules: [] };
+    /**
+     * 没有配置文件（首次启动）或文件坏了。
+     *
+     * ⚠️ 这里也**必须走一遍 normalizeConfig**：直接摊开 `DEFAULT_CONFIG` 会让
+     * `workflows` 停在空数组（它的默认值就是 `[]`，由 normalize 补出内置那一份），
+     * 于是「第一次装插件」的人会看到一个没有工作流可选、也点不动的生图面板。
+     */
+    cache = normalizeConfig(DEFAULT_CONFIG);
   }
   return cache;
 }
@@ -794,11 +737,9 @@ export async function saveConfig(patch: Partial<Config>): Promise<Config> {
 }
 
 /** 回传给浏览器的脱敏视图：只说明 key 是否已配置，以及尾部 4 位。 */
-export interface ConfigView extends Omit<Config, "toapisApiKey" | "arkApiKey" | "minimaxApiKey" | "customApiKey" | "comfyCookies" | "musicApiKey" | "sfxApiKey"> {
+export interface ConfigView extends Omit<Config, "toapisApiKey" | "minimaxApiKey" | "customApiKey" | "comfyCookies" | "musicApiKey" | "sfxApiKey"> {
   toapisApiKeySet: boolean;
   toapisApiKeyHint: string;
-  arkApiKeySet: boolean;
-  arkApiKeyHint: string;
   minimaxApiKeySet: boolean;
   minimaxApiKeyHint: string;
   customApiKeySet: boolean;
@@ -812,17 +753,17 @@ export interface ConfigView extends Omit<Config, "toapisApiKey" | "arkApiKey" | 
 }
 
 export function maskConfig(config: Config): ConfigView {
-  const { toapisApiKey, arkApiKey, minimaxApiKey, customApiKey, comfyCookies, musicApiKey, sfxApiKey, ...rest } = config;
+  const { toapisApiKey, minimaxApiKey, customApiKey, comfyCookies, musicApiKey, sfxApiKey, ...rest } = config;
   const cookie = normalizeComfyCookies(comfyCookies);
   return {
     ...rest,
     rowOrder: [...config.rowOrder],
     // 复制一份再回传：界面改勾选后会把它当草稿改，共享同一个数组会互相写花。
     hiddenModules: [...config.hiddenModules],
+    // 工作流列表同理：界面会就地改名 / 改内容，不复制会让宿主与浏览器半区共享同一批对象。
+    workflows: config.workflows.map((entry) => ({ ...entry })),
     toapisApiKeySet: toapisApiKey.trim() !== "",
     toapisApiKeyHint: hintOf(toapisApiKey),
-    arkApiKeySet: arkApiKey.trim() !== "",
-    arkApiKeyHint: hintOf(arkApiKey),
     minimaxApiKeySet: minimaxApiKey.trim() !== "",
     minimaxApiKeyHint: hintOf(minimaxApiKey),
     customApiKeySet: customApiKey.trim() !== "",

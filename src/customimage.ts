@@ -1,34 +1,25 @@
 /**
- * 自定义生图后端：OpenAI API / ComfyUI API / Stable Diffusion WebUI API。
+ * ComfyUI 生图后端。
  *
- * 三个协议的共同点是「都返回图片字节」，差异全在**怎么问**：
- *
- * | 协议 | 生图 | 带参考图 | 取结果 |
- * |---|---|---|---|
- * | `openai` | `POST {base}/images/generations` | `POST {base}/images/edits`（multipart），
- *   端点不存在时退回 generations 的 `image` 字段 | `data[0].b64_json` 或 `data[0].url` |
- * | `sdwebui` | `POST {base}/sdapi/v1/txt2img` | `POST {base}/sdapi/v1/img2img`（`init_images`） | `images[0]`（base64） |
- * | `comfyui` | `POST {base}/prompt` + 轮询 `/history` + `GET /view` | 先 `POST {base}/upload/image`，把文件名写进工作流 | `/view` 返回的图片字节 |
+ * 只保留 ComfyUI 一种协议：提交 → 轮询 `/history` → `GET /view` 取回图片字节。
  *
  * 这里**只负责一次调用**，不做重试、不碰落盘：重试与产物管理在各自的模块里。
  */
 
 import { sniffExt } from "./ark.js";
-import { CUSTOM_PROTOCOL_DEFAULTS, type CustomProtocol } from "./config.js";
+import { applyWorkflowParams } from "./workflowparams.js";
 
-export interface CustomImageRequest {
-  protocol: CustomProtocol;
+export interface ComfyImageRequest {
   /** 主机根地址（不含具体端点），末尾斜杠由调用方去掉。 */
   baseUrl: string;
   apiKey: string;
-  model: string;
   prompt: string;
   /**
-   * 参考图。元素是 `data:image/...;base64,...` 或 http(s) URL —— 与 Ark 那条路**同形**，
-   * 所以调用点不必为「换了后端」分叉。各协议自己决定怎么把它变成对方要的形态。
+   * 参考图。元素是 `data:image/...;base64,...` 或 http(s) URL ——
+   * 各调用点不必为「换了后端」分叉。
    */
   images: string[];
-  /** `1024x1024` / `1024×1024` / `1K` / `2K` / `4K`，或空串（交给服务端默认）。 */
+  /** `1024x1024` / `1024×1024` / `1K` / `2K` / `4K`，或空串（交给工作流自己的值）。 */
   size: string;
   timeoutMs: number;
   negativePrompt: string;
@@ -41,9 +32,23 @@ export interface CustomImageRequest {
   seed: number;
   /** ComfyUI 的 API 格式工作流 JSON（文本）。 */
   workflow: string;
+  /**
+   * 用户在参数面板里改过的值（`节点id.输入名` → 值）。
+   *
+   * 这些值在**占位符替换之后**再写一遍，所以它们优先于工作流里的默认值 ——
+   * 这正是「参数面板上调了要生效」的语义。
+   */
+  params?: Record<string, string | number | boolean>;
+  /**
+   * 每个参数声明的类型（`节点id.输入名` → `int` / `float` / `text` / `boolean` / `enum`）。
+   *
+   * 由调用方从 `discoverWorkflowParams` 的结果带过来。没有它时退回「按当前值猜类型」，
+   * 而当前值常常是 `"{{seed}}"` 这种字符串占位符 —— 猜成字符串就会让 ComfyUI 报 type 错误。
+   */
+  paramKinds?: Record<string, "int" | "float" | "text" | "boolean" | "enum">;
 }
 
-export interface CustomImageResult {
+export interface ComfyImageResult {
   bytes: Buffer;
   /** 落盘用的扩展名，由实际内容嗅探得到。 */
   ext: string;
@@ -61,21 +66,12 @@ export class CustomImageError extends Error {
   }
 }
 
-function protocolLabel(protocol: CustomProtocol): string {
-  return CUSTOM_PROTOCOL_DEFAULTS[protocol]?.label ?? protocol;
-}
-
 /** 拼端点：容忍用户把末尾斜杠写多了。 */
 function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
-/**
- * 鉴权头。
- *
- * 三种情况都要照顾到：没有 Key（本地服务，最常见）、`user:pass`（A1111 的 `--api-auth`
- * 是 HTTP Basic）、以及普通 Bearer Token（云端 OpenAI 兼容服务）。
- */
+/** 鉴权头：本地服务通常不需要；云端 / 反代用 Bearer Token。 */
 function authHeaders(apiKey: string): Record<string, string> {
   const key = apiKey.trim();
   if (key === "") return {};
@@ -89,14 +85,12 @@ interface SignalContext {
   composed: AbortSignal;
   timeout: AbortSignal;
   signal: AbortSignal | undefined;
-  protocol: CustomProtocol;
   timeoutMs: number;
 }
 
-function makeSignalContext(protocol: CustomProtocol, timeoutMs: number, signal: AbortSignal | undefined): SignalContext {
+function makeSignalContext(timeoutMs: number, signal: AbortSignal | undefined): SignalContext {
   const timeout = AbortSignal.timeout(Math.max(10000, timeoutMs));
   return {
-    protocol,
     timeoutMs,
     signal,
     timeout,
@@ -106,12 +100,11 @@ function makeSignalContext(protocol: CustomProtocol, timeoutMs: number, signal: 
 
 /** 统一的网络错误翻译：超时 / 主动取消 / 连不上，三种要给用户完全不同的提示。 */
 function networkError(context: SignalContext, error: unknown): CustomImageError {
-  const label = protocolLabel(context.protocol);
   if (context.timeout.aborted) {
-    return new CustomImageError(`${label} 请求超时（${Math.round(context.timeoutMs / 1000)} 秒）`);
+    return new CustomImageError(`ComfyUI 请求超时（${Math.round(context.timeoutMs / 1000)} 秒）`);
   }
-  if (context.signal?.aborted === true) return new CustomImageError(`${label} 请求已被取消`);
-  return new CustomImageError(`无法连接 ${label}：${error instanceof Error ? error.message : String(error)}`);
+  if (context.signal?.aborted === true) return new CustomImageError("ComfyUI 请求已被取消");
+  return new CustomImageError(`无法连接 ComfyUI：${error instanceof Error ? error.message : String(error)}`);
 }
 
 async function fetchOrThrow(url: string, init: RequestInit, context: SignalContext): Promise<Response> {
@@ -122,7 +115,7 @@ async function fetchOrThrow(url: string, init: RequestInit, context: SignalConte
   }
 }
 
-/** 读错误体：不同后端给的字段名差很远，能捞到一句人话就够。 */
+/** 读错误体：能捞到一句人话就够。 */
 async function errorMessageOf(response: Response): Promise<string> {
   const text = await response.text().catch(() => "");
   if (text.trim() === "") return `HTTP ${response.status} ${response.statusText}`;
@@ -146,7 +139,7 @@ async function errorMessageOf(response: Response): Promise<string> {
 async function ensureOk(response: Response, context: SignalContext, what: string): Promise<void> {
   if (response.ok) return;
   const detail = await errorMessageOf(response);
-  throw new CustomImageError(`${protocolLabel(context.protocol)} ${what}失败（HTTP ${response.status}）：${detail}`, response.status);
+  throw new CustomImageError(`ComfyUI ${what}失败（HTTP ${response.status}）：${detail}`, response.status);
 }
 
 // ── 尺寸 ──────────────────────────────────────────────────────────────
@@ -155,7 +148,7 @@ async function ensureOk(response: Response, context: SignalContext, what: string
  * 把尺寸写成 `宽x高`。
  *
  * 三种写法都认：`1024x1024` / `1024×1024` / `1K`(→1024) `2K`(→2048) `4K`(→4096)。
- * 认不出来返回 undefined —— 各协议据此决定「不传尺寸、用服务端默认」，
+ * 认不出来返回 undefined —— 此时不传尺寸、用工作流自己的值，
  * 而不是硬塞一个可能让请求 400 的值。
  */
 export function parseSizeSpec(size: string): { width: number; height: number } | undefined {
@@ -183,7 +176,7 @@ async function readBytes(source: string, context: SignalContext): Promise<Buffer
     await ensureOk(response, context, "下载参考图");
     return Buffer.from(await response.arrayBuffer());
   }
-  throw new CustomImageError("参考图既不是 data URI 也不是 http(s) 地址，无法发送给自定义后端");
+  throw new CustomImageError("参考图既不是 data URI 也不是 http(s) 地址，无法发送给 ComfyUI");
 }
 
 function mimeOfBytes(bytes: Buffer, fallback: string): string {
@@ -202,161 +195,10 @@ async function toBlob(source: string, context: SignalContext, name: string): Pro
   return { blob: new Blob([new Uint8Array(bytes)], { type: mime }), filename };
 }
 
-/** data URI / URL → 纯 base64（A1111 的 `init_images` 要这个形态）。 */
-async function toBase64(source: string, context: SignalContext): Promise<string> {
-  const bytes = await readBytes(source, context);
-  return bytes.toString("base64");
-}
-
-/** 结果字节里的 base64 可能带 data URI 前缀，剥掉再解码。 */
-function decodeBase64Image(value: string): Buffer {
-  return Buffer.from(value.replace(/^data:[^;]+;base64,/, ""), "base64");
-}
-
-// ── OpenAI 协议 ────────────────────────────────────────────────────────
-
-interface OpenAiItem {
-  b64_json?: string;
-  url?: string;
-}
-
-async function readOpenAiPayload(payload: any, context: SignalContext): Promise<CustomImageResult> {
-  const item = (payload?.data?.[0] ?? undefined) as OpenAiItem | undefined;
-  if (item === undefined) {
-    throw new CustomImageError(`OpenAI 兼容接口的返回里没有图片：${JSON.stringify(payload).slice(0, 400)}`);
-  }
-  if (typeof item.b64_json === "string" && item.b64_json !== "") {
-    const bytes = decodeBase64Image(item.b64_json);
-    return { bytes, ext: sniffExt(bytes), usage: payload?.usage };
-  }
-  if (typeof item.url === "string" && item.url !== "") {
-    const download = await fetchOrThrow(item.url, { method: "GET" }, context);
-    await ensureOk(download, context, "下载生成结果");
-    const bytes = Buffer.from(await download.arrayBuffer());
-    return { bytes, ext: sniffExt(bytes), remoteUrl: item.url, usage: payload?.usage };
-  }
-  throw new CustomImageError(`OpenAI 兼容接口返回里既没有 url 也没有 b64_json：${JSON.stringify(item).slice(0, 400)}`);
-}
-
-async function generateOpenAi(request: CustomImageRequest, context: SignalContext): Promise<CustomImageResult> {
-  const auth = authHeaders(request.apiKey);
-  const size = parseSizeSpec(request.size);
-  const base = request.baseUrl;
-
-  /**
-   * 带参考图时先走官方的 `images/edits`。
-   *
-   * ⚠️ 这条**只在端点真的不存在时**退回：404 / 405 说明对方是「纯 generations」的
-   * 兼容实现（很多自建网关就是这样），退回时把参考图塞进 generations 的 `image`
-   * 字段（火山方舟 / DashScope 那一系的写法）。用 400 当信号是不行的 ——
-   * 400 往往意味着模型不接受参考图，静默退回只会把一个真实错误变成一次「没带参考图
-   * 的生成」，用户拿到的是丢弃了设定的图。
-   */
-  if (request.images.length > 0) {
-    const form = new FormData();
-    form.set("model", request.model);
-    form.set("prompt", request.prompt);
-    form.set("n", "1");
-    if (size !== undefined) form.set("size", `${size.width}x${size.height}`);
-    for (const [index, image] of request.images.entries()) {
-      const { blob, filename } = await toBlob(image, context, `reference-${index + 1}.png`);
-      form.append(index === 0 ? "image" : "image[]", blob, filename);
-    }
-    const edits = await fetchOrThrow(joinUrl(base, "/images/edits"), { method: "POST", headers: auth, body: form }, context);
-    if (edits.status !== 404 && edits.status !== 405) {
-      await ensureOk(edits, context, "图生图（images/edits）");
-      const payload = (await edits.json().catch(() => undefined)) as any;
-      return readOpenAiPayload(payload, context);
-    }
-  }
-
-  const body: Record<string, unknown> = { model: request.model, prompt: request.prompt, n: 1 };
-  if (size !== undefined) body.size = `${size.width}x${size.height}`;
-  // 不主动写 response_format：`gpt-image-1` 固定回 b64_json，写了反而可能被拒；
-  // 下面两种返回形态都处理了。
-  if (request.images.length === 1) body.image = request.images[0];
-  else if (request.images.length > 1) body.image = request.images;
-
-  const response = await fetchOrThrow(
-    joinUrl(base, "/images/generations"),
-    { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(body) },
-    context
-  );
-  await ensureOk(response, context, "生图");
-  const payload = (await response.json().catch(() => undefined)) as any;
-  return readOpenAiPayload(payload, context);
-}
-
-// ── Stable Diffusion WebUI（A1111）协议 ────────────────────────────────
-
-async function generateSdWebui(request: CustomImageRequest, context: SignalContext): Promise<CustomImageResult> {
-  const size = parseSizeSpec(request.size) ?? { width: 512, height: 512 };
-  const body: Record<string, unknown> = {
-    prompt: request.prompt,
-    negative_prompt: request.negativePrompt,
-    width: size.width,
-    height: size.height,
-    steps: request.steps,
-    cfg_scale: request.cfgScale,
-    sampler_name: request.sampler,
-    // A1111 的约定：-1 = 每次随机。
-    seed: request.seed < 0 ? -1 : request.seed,
-    batch_size: 1,
-    n_iter: 1,
-    save_images: false
-  };
-
-  let path = "/sdapi/v1/txt2img";
-  if (request.images.length > 0) {
-    path = "/sdapi/v1/img2img";
-    body.init_images = await Promise.all(request.images.map((image) => toBase64(image, context)));
-    body.denoising_strength = request.denoising;
-  }
-
-  const response = await fetchOrThrow(
-    joinUrl(request.baseUrl, path),
-    {
-      method: "POST",
-      headers: { ...authHeaders(request.apiKey), "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    },
-    context
-  );
-  if (!response.ok) {
-    const detail = await errorMessageOf(response);
-    // 最常见的两个坑：没加 --api、或者 /sdapi 被禁用（`--nowebui` / 只开了 webui 端口）。
-    const hint =
-      response.status === 404
-        ? "（确认 WebUI 是用 `--api` 启动的，且地址是 API 端口）"
-        : "";
-    throw new CustomImageError(
-      `${protocolLabel("sdwebui")} 生图失败（HTTP ${response.status}）：${detail}${hint}`,
-      response.status
-    );
-  }
-
-  const payload = (await response.json().catch(() => undefined)) as any;
-  const first = payload?.images?.[0];
-  if (typeof first !== "string" || first === "") {
-    throw new CustomImageError(`WebUI 返回里没有图片：${JSON.stringify(payload).slice(0, 400)}`);
-  }
-  const bytes = decodeBase64Image(first);
-  // `info` 是一串 JSON 文本，里面是本次实际用的参数（种子、模型），排错时非常有用。
-  let usage: unknown;
-  if (typeof payload?.info === "string") {
-    try {
-      usage = JSON.parse(payload.info);
-    } catch {
-      usage = payload.info.slice(0, 400);
-    }
-  }
-  return { bytes, ext: sniffExt(bytes), usage };
-}
-
 // ── ComfyUI 协议 ───────────────────────────────────────────────────────
 
 /** 占位符 → 值。数值类会**按数字写进 JSON**（写成字符串 ComfyUI 的 int 输入会报错）。 */
-function workflowValues(request: CustomImageRequest, seed: number, imageNames: string[]): Record<string, string | number> {
+function workflowValues(request: ComfyImageRequest, seed: number, imageNames: string[]): Record<string, string | number> {
   const size = parseSizeSpec(request.size) ?? { width: 1024, height: 1024 };
   const values: Record<string, string | number> = {
     prompt: request.prompt,
@@ -368,7 +210,7 @@ function workflowValues(request: CustomImageRequest, seed: number, imageNames: s
     cfg: request.cfgScale,
     sampler: request.sampler,
     denoising: request.denoising,
-    model: request.model,
+    model: "",
     batch: 1
   };
   if (imageNames.length > 0) values.image = imageNames[0];
@@ -498,9 +340,9 @@ function comfyStatusError(status: any): string | undefined {
   return undefined;
 }
 
-async function generateComfyUi(request: CustomImageRequest, context: SignalContext): Promise<CustomImageResult> {
+async function generateComfyUi(request: ComfyImageRequest, context: SignalContext): Promise<ComfyImageResult> {
   if (request.workflow.trim() === "") {
-    throw new CustomImageError("ComfyUI 需要一个 API 格式的工作流 JSON：在 ComfyUI 里点「导出（API）」，把那份 JSON 整段粘进设置页");
+    throw new CustomImageError("没有可用的工作流：在设置页粘贴一份 ComfyUI 的「导出（API）」JSON，或在任务面板里换一份");
   }
   let parsed: unknown;
   try {
@@ -532,7 +374,7 @@ async function generateComfyUi(request: CustomImageRequest, context: SignalConte
   }
 
   const used = new Set<string>();
-  const workflow = substituteWorkflow(parsed, workflowValues(request, seed, imageNames), used) as Record<string, unknown>;
+  let workflow = substituteWorkflow(parsed, workflowValues(request, seed, imageNames), used) as Record<string, unknown>;
   if (imageNames.length > 0 && !used.has("image")) {
     patchLoadImage(workflow, imageNames[0]);
   }
@@ -544,6 +386,24 @@ async function generateComfyUi(request: CustomImageRequest, context: SignalConte
   if (!used.has("width") || !used.has("height")) {
     const size = parseSizeSpec(request.size);
     if (size !== undefined) patchLatentSize(workflow, size.width, size.height);
+  }
+  /**
+   * 最后把参数面板里改过的值写回去。
+   *
+   * 放在占位符替换**之后**是有意的：参数面板显示的是工作流里的真实输入，
+   * 用户在那里改的东西必须赢过占位符与默认值，否则「调了没反应」。
+   *
+   * 类型按**节点定义**判定（`request.paramKinds`）：工作流里的槽位往往还是
+   * `"{{seed}}"` 这种字符串，只看当前值会把数字写成字符串，ComfyUI 的 int 直接报错。
+   */
+  if (request.params !== undefined && Object.keys(request.params).length > 0) {
+    const declared = request.paramKinds === undefined
+      ? undefined
+      : Object.entries(request.paramKinds).map(([key, kind]) => {
+          const dot = key.indexOf(".");
+          return { key, nodeId: key.slice(0, dot), nodeType: "", nodeTitle: "", input: key.slice(dot + 1), label: "", kind, value: "" } as never;
+        });
+    workflow = applyWorkflowParams(workflow as never, request.params, declared) as unknown as Record<string, unknown>;
   }
 
   const clientId = `gmm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -559,7 +419,7 @@ async function generateComfyUi(request: CustomImageRequest, context: SignalConte
   if (!queued.ok) {
     const detail = await errorMessageOf(queued);
     throw new CustomImageError(
-      `${protocolLabel("comfyui")} 提交工作流失败（HTTP ${queued.status}）：${detail}` +
+      `ComfyUI 提交工作流失败（HTTP ${queued.status}）：${detail}` +
         (queued.status === 400 ? "（多半是工作流里有节点参数不合法，先在 ComfyUI 里跑通再导出 API 格式）" : ""),
       queued.status
     );
@@ -625,16 +485,11 @@ function sleep(ms: number, context: SignalContext): Promise<void> {
 
 // ── 入口 ───────────────────────────────────────────────────────────────
 
-/** 调一次自定义后端。`images` 为空时是文生图，非空时按各协议的做法带上参考图。 */
-export async function generateCustomImage(request: CustomImageRequest, signal?: AbortSignal): Promise<CustomImageResult> {
+/** 调一次 ComfyUI。`images` 为空时是文生图，非空时按工作流的 `LoadImage` / `{{image}}` 带参考图。 */
+export async function generateComfyImage(request: ComfyImageRequest, signal?: AbortSignal): Promise<ComfyImageResult> {
   if (request.baseUrl.trim() === "") {
-    throw new CustomImageError("尚未配置自定义生图服务的地址（设置 → 游戏素材大师 → 自定义生图模型）");
+    throw new CustomImageError("尚未配置 ComfyUI 的地址（设置 → 游戏素材大师 → 生图后端）");
   }
-  if (request.prompt.trim() === "" && request.protocol !== "comfyui") {
-    throw new CustomImageError("提示词为空");
-  }
-  const context = makeSignalContext(request.protocol, request.timeoutMs, signal);
-  if (request.protocol === "openai") return generateOpenAi(request, context);
-  if (request.protocol === "sdwebui") return generateSdWebui(request, context);
+  const context = makeSignalContext(request.timeoutMs, signal);
   return generateComfyUi(request, context);
 }

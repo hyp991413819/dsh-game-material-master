@@ -233,9 +233,6 @@ async function main() {
   // ── 2. 配置 ────────────────────────────────────────────────────────────
   console.log("2) 配置读写与脱敏");
   const initial = await studio.getConfig();
-  // 默认模型是 5.0 Flash。**不要改回 4.0**：实测 4.0 会把 2:1 等距菱形画成近正方形
-  // （比例 1.058）并且只输出 JPEG，地图地块模块依赖这个几何，用它必然量不出菱形。
-  check("默认使用 Seedream 5.0 Flash", initial.arkModel === "doubao-seedream-5-0-flash-260915", initial.arkModel);
   check("ffmpeg 探测通过", initial.ffmpeg?.ok === true, initial.ffmpeg?.version ?? initial.ffmpeg?.error);
   check("默认单格 256×256", initial.cellWidth === 256 && initial.cellHeight === 256);
   check("默认每段抽 8 帧", initial.frameCount === 8);
@@ -243,7 +240,7 @@ async function main() {
   check("默认开启自动裁剪", initial.autoCrop === true);
   check("默认抽帧工作尺寸 768", initial.workingLongEdge === 768, String(initial.workingLongEdge));
   check("默认开启背景空间分割", initial.bgTolerance === 90, String(initial.bgTolerance));
-  check("初始未配置 Key", initial.arkApiKeySet === false && initial.minimaxApiKeySet === false);
+  check("初始未配置 Key", initial.customApiKeySet === false && initial.minimaxApiKeySet === false);
   // 功能管理：默认全部模块可见；写进去的非法 key 要被丢掉、顺序要固定
   // （顺序固定是为了让「同一组勾选」永远序列化成同一份 JSON）。
   check("默认没有任何被隐藏的功能", JSON.stringify(initial.hiddenModules) === JSON.stringify([]), JSON.stringify(initial.hiddenModules));
@@ -290,10 +287,10 @@ async function main() {
   check("切回官方 H3 后前缀还原为空", cpBack.minimaxPathPrefix === "");
   check("切回官方 H3 后档位还原", cpBack.minimaxCapabilities?.resolutions?.join(",") === "2K,768P");
 
-  const saved = await studio.saveConfig({ arkApiKey: "test-ark-key-1234", cellWidth: 300 });
-  check("保存后标记为已配置", saved.arkApiKeySet === true);
-  check("Key 只回传尾号提示", saved.arkApiKeyHint === "…1234", saved.arkApiKeyHint);
-  check("返回体里没有明文 Key", JSON.stringify(saved).includes("test-ark-key-1234") === false);
+  const saved = await studio.saveConfig({ customApiKey: "local-secret-1234", cellWidth: 300 });
+  check("保存后标记为已配置", saved.customApiKeySet === true);
+  check("Key 只回传尾号提示", saved.customApiKeyHint === "…1234", saved.customApiKeyHint);
+  check("返回体里没有明文 Key", JSON.stringify(saved).includes("local-secret-1234") === false);
   check("尺寸改动已生效", saved.cellWidth === 300);
 
   const clamped = await studio.saveConfig({ keyHigh: 3, keyLow: 200, frameCount: 999, concurrency: 99 });
@@ -340,50 +337,60 @@ async function main() {
   const customConfig = normalizeConfig({ rowOrder: ["front", "back"], rowOrderVersion: ROW_ORDER_VERSION });
   check("任意自定义行序都不被改写", JSON.stringify(customConfig.rowOrder) === JSON.stringify(["front", "back"]));
 
-  const kept = await studio.saveConfig({ arkModel: "doubao-seedream-4-5-251128" });
-  check("不带 Key 的保存不会清空 Key", kept.arkApiKeySet === true);
-  const cleared = await studio.saveConfig({ clearArkApiKey: true });
-  check("clearArkApiKey 能清空 Key", cleared.arkApiKeySet === false);
+  const kept = await studio.saveConfig({ customSize: "1024x1024" });
+  check("不带 Key 的保存不会清空 Key", kept.customApiKeySet === true);
+  const cleared = await studio.saveConfig({ clearCustomApiKey: true });
+  check("clearCustomApiKey 能清空 Key", cleared.customApiKeySet === false);
 
-  // ── 2c. 生图后端：ark / custom 两条路走真实网关 ───────────────────────
+  // ── 2c. 生图后端：只剩 ComfyUI 与 ToAPIs 两条路 ───────────────────────
   // 只在这里验「配置能不能存进去、能不能读出来、脱敏对不对、阻塞判断是不是宿主算的」；
-  // 三种协议本身的请求细节由 scripts/verify-custom-image.mjs 打本地假服务端覆盖。
-  check("默认生图后端是火山方舟", initial.imageProvider === "ark", String(initial.imageProvider));
-  check("配置视图给出三种自定义协议", Array.isArray(initial.customProtocols) && initial.customProtocols.map((entry) => entry.id).join(",") === "openai,comfyui,sdwebui", JSON.stringify((initial.customProtocols ?? []).map((entry) => entry.id)));
-  check("每个协议都带默认地址与端点说明", (initial.customProtocols ?? []).every((entry) => typeof entry.baseUrl === "string" && entry.baseUrl !== "" && typeof entry.hint === "string" && entry.hint !== ""));
-  // 「当前后端」与「自定义那一组」是**两份**阻塞：前者决定能不能开跑，
-  // 后者决定自定义那一组的「测试连接」按钮能不能点 —— 两组互不牵连，
-  // 否则没配火山方舟 Key 的用户连自己的本地服务都测不了。
-  check("默认按火山方舟判定当前后端（没有 Key 就拦）", /火山方舟 API Key/.test(String(initial.imageProviderBlocker)), String(initial.imageProviderBlocker));
-  check("默认的自定义那一组是齐的（有默认地址与模型名）", initial.customImageBlocker === null, String(initial.customImageBlocker));
-  check("摘要写明当前生效的后端", typeof initial.imageProviderSummary === "string" && initial.imageProviderSummary.includes("火山方舟"), String(initial.imageProviderSummary));
+  // ComfyUI 的请求细节由 scripts/verify-custom-image.mjs 打本地假服务端覆盖。
+  check("默认生图后端是 ComfyUI", initial.imageProvider === "comfyui", String(initial.imageProvider));
+  check("配置视图给出 ComfyUI 的默认地址与端点说明", typeof initial.comfyImageProvider?.baseUrl === "string" && typeof initial.comfyImageProvider?.hint === "string");
+  // 工作流列表**永远非空**：空列表等于「没有工作流可选」，生图按钮会变成死的。
+  check("默认就带一份工作流", Array.isArray(initial.workflows) && initial.workflows.length >= 1, JSON.stringify((initial.workflows ?? []).length));
+  check("默认工作流是合法的 API 格式 JSON", (() => {
+    try { return typeof JSON.parse(initial.workflows[0].json) === "object"; } catch { return false; }
+  })());
+  check("默认工作流 id 与 activeWorkflowId 一致", initial.activeWorkflowId === initial.workflows[0].id);
+  check("默认可以开跑（地址与工作流都齐）", initial.imageProviderBlocker === null, String(initial.imageProviderBlocker));
+  check("摘要写明当前生效的后端与工作流", initial.imageProviderSummary.includes("ComfyUI"), String(initial.imageProviderSummary));
 
   const customSaved = await studio.saveConfig({
-    imageProvider: "custom",
-    customProtocol: "comfyui",
+    imageProvider: "comfyui",
     customBaseUrl: "http://127.0.0.1:8188",
-    customApiKey: "local-secret-9",
-    customModel: "sdxl.safetensors",
-    customWorkflow: '{"1":{"class_type":"KSampler","inputs":{"seed":"{{seed}}"}}}'
+    customApiKey: "local-secret-9"
   });
-  check("保存后当前后端是自定义", customSaved.imageProvider === "custom");
+  check("保存后当前后端是 ComfyUI", customSaved.imageProvider === "comfyui");
   check("自定义 Key 只回传尾号提示", customSaved.customApiKeyHint === "…et-9", customSaved.customApiKeyHint);
   check("返回体里没有自定义 Key 明文", JSON.stringify(customSaved).includes("local-secret-9") === false);
   check("配好之后宿主判定可以开跑", customSaved.imageProviderBlocker === null, String(customSaved.imageProviderBlocker));
+  check("摘要带上地址", customSaved.imageProviderSummary.includes("127.0.0.1:8188"), customSaved.imageProviderSummary);
+
+  // 多工作流：增 / 改名 / 切换 / 删。列表删空时必须自动补回一份。
+  const twoWorkflows = await studio.saveConfig({
+    workflows: [
+      { id: "wa", name: "文生图", json: '{"1":{"class_type":"KSampler","inputs":{"seed":"{{seed}}"}}}' },
+      { id: "wb", name: "带参考图", json: '{"2":{"class_type":"LoadImage","inputs":{"image":"{{image}}"}}}' }
+    ],
+    activeWorkflowId: "wb"
+  });
+  check("可以保存多份工作流", twoWorkflows.workflows.length === 2, String(twoWorkflows.workflows.length));
+  check("activeWorkflowId 生效", twoWorkflows.activeWorkflowId === "wb");
+  check("摘要跟着当前工作流变", twoWorkflows.imageProviderSummary.includes("带参考图"), twoWorkflows.imageProviderSummary);
+  const badWorkflow = await studio.saveConfig({ workflows: [{ id: "wx", name: "坏的", json: "not json" }] });
   check(
-    "选了自定义后端后，缺火山方舟 Key 不再阻塞（两套配置互不牵连）",
-    customSaved.arkApiKeySet === false && customSaved.imageProviderBlocker === null
+    "非法工作流 JSON 不会被存下来（回落成一份合法的）",
+    (() => { try { JSON.parse(badWorkflow.workflows[0].json); return true; } catch { return false; } })(),
+    badWorkflow.workflows[0].json.slice(0, 40)
   );
-  check("摘要带上协议与地址", customSaved.imageProviderSummary.includes("ComfyUI API") && customSaved.imageProviderSummary.includes("127.0.0.1:8188"), customSaved.imageProviderSummary);
-  await studio.saveConfig({ customWorkflow: "" });
-  check(
-    "ComfyUI 没填工作流时宿主给出阻塞说明（界面与工具面共用同一份判断）",
-    /工作流 JSON/.test(String((await studio.getConfig()).imageProviderBlocker)),
-    String((await studio.getConfig()).imageProviderBlocker)
-  );
-  const backToArk = await studio.saveConfig({ imageProvider: "ark", customWorkflow: "", customApiKey: "" });
-  check("切回火山方舟后阻塞回到 Key 那一句", /火山方舟 API Key/.test(String(backToArk.imageProviderBlocker)), String(backToArk.imageProviderBlocker));
-  check("清空自定义 Key 生效", backToArk.customApiKeySet === false);
+  const emptied = await studio.saveConfig({ workflows: [] });
+  check("工作流列表删空时自动补回一份", emptied.workflows.length === 1, String(emptied.workflows.length));
+  check("补回的那份 activeWorkflowId 也指对了", emptied.activeWorkflowId === emptied.workflows[0].id);
+  // 清 Key 必须放在**所有**带 Key 的保存之后：上面 customSaved 又写了一次 Key，
+  // 在它之前判「已清空」永远会失败。
+  await studio.saveConfig({ clearCustomApiKey: true });
+  check("清空自定义 Key 生效", (await studio.getConfig()).customApiKeySet === false);
 
   // ── 3. 项目 CRUD ──────────────────────────────────────────────────────
   console.log("3) 项目增删改查");
@@ -1524,20 +1531,23 @@ async function main() {
   check("参考图已记录", imageJob.refs.length === 1, `${imageJob.refs.length} 张`);
   check("图片任务带 assetBase", imageJob.assetBase.endsWith(`/image-assets/${imageId}/`), imageJob.assetBase);
 
+  // 尺寸来源：**刚建出来**的任务默认跟全局。这条必须在下面塞 `size` 之前判 ——
+  // 传一个与全局不同的 size 会自动转成自定义，之后再判「默认」就永远不对。
+  check("新图片任务默认跟随全局尺寸", imageJob.settings.sizeMode === "global", imageJob.settings.sizeMode);
+
   // 生图模型是全局设置：客户端塞一个过期的模型 id，也必须被纠正回全局值。
   await studio.saveImageJob({ jobId: imageId, settings: { model: "some-stale-model", size: "2K" } });
   imageJob = await studio.getImageJob({ jobId: imageId });
   check(
     "图片任务的模型跟随全局设置",
-    imageJob.settings.model === (await studio.getConfig()).arkModel,
-    `${imageJob.settings.model} vs ${(await studio.getConfig()).arkModel}`
+    imageJob.settings.model === (await studio.getConfig()).imageModel,
+    `${imageJob.settings.model} vs ${(await studio.getConfig()).imageModel}`
   );
 
-  // 尺寸来源：默认跟全局；显式「自定义」后才保留任务自己的值。
-  check("新图片任务默认跟随全局尺寸", imageJob.settings.sizeMode === "global", imageJob.settings.sizeMode);
+  // 尺寸来源：显式「自定义」后才保留任务自己的值。
   {
-    const originalSize = (await studio.getConfig()).arkSize;
-    await studio.saveConfig({ arkSize: "1024x768" });
+    const originalSize = (await studio.getConfig()).customSize;
+    await studio.saveConfig({ customSize: "1024x768" });
     await studio.saveImageJob({ jobId: imageId, settings: { size: "2K" } });
     let sized = await studio.getImageJob({ jobId: imageId });
     check("只传 size 且与全局不同时自动转成自定义（老调用方不被静默忽略）", sized.settings.sizeMode === "custom" && sized.settings.size === "2K", JSON.stringify(sized.settings));
@@ -1547,7 +1557,7 @@ async function main() {
     check("跟随全局时用全局尺寸", sized.settings.size === "1024x768", sized.settings.size);
 
     await studio.saveImageJob({ jobId: imageId, settings: { sizeMode: "custom", size: "1024x1536" } });
-    await studio.saveConfig({ arkSize: "512x512" });
+    await studio.saveConfig({ customSize: "512x512" });
     sized = await studio.getImageJob({ jobId: imageId });
     check("自定义尺寸不随全局漂移", sized.settings.sizeMode === "custom" && sized.settings.size === "1024x1536", JSON.stringify(sized.settings));
 
@@ -1555,7 +1565,7 @@ async function main() {
     sized = await studio.getImageJob({ jobId: imageId });
     check("切回跟随全局后拿到最新全局值", sized.settings.size === "512x512", sized.settings.size);
     check("装饰后的配置给出当前输出尺寸", (await studio.getConfig()).imageProviderSize === "512x512", (await studio.getConfig()).imageProviderSize);
-    await studio.saveConfig({ arkSize: originalSize });
+    await studio.saveConfig({ customSize: originalSize });
     await studio.saveImageJob({ jobId: imageId, settings: { sizeMode: "global" } });
   }
 

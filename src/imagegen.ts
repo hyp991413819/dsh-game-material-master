@@ -75,6 +75,10 @@ export interface ImageJob {
     size: string;
     count: number;
     watermark: boolean;
+    /** 这个任务用哪份工作流（空 = 跟随全局当前那份）。 */
+    workflowId: string;
+    /** 参数面板里改过的值（`节点id.输入名` → 值）。 */
+    params: Record<string, string | number | boolean>;
   };
   keying: KeyingSettings;
   items: ImageItem[];
@@ -136,7 +140,10 @@ export async function createImageJob(name: string): Promise<ImageJob> {
       sizeMode: "global",
       size: imageSizeOf(config),
       count: 1,
-      watermark: imageWatermarkOf(config)
+      watermark: imageWatermarkOf(config),
+      // 新任务默认跟随全局当前那份工作流；参数全用工作流里的默认值。
+      workflowId: "",
+      params: {}
     },
     keying: {
       enabled: false,
@@ -231,7 +238,24 @@ function normalizeImageJob(raw: any): ImageJob {
       sizeMode: raw?.settings?.sizeMode === "custom" ? "custom" : "global",
       size: typeof raw?.settings?.size === "string" ? raw.settings.size : "2K",
       count: Math.min(8, Math.max(1, Number(raw?.settings?.count) || 1)),
-      watermark: raw?.settings?.watermark === true
+      watermark: raw?.settings?.watermark === true,
+      /**
+       * 这个任务用哪份工作流（空 = 跟随全局当前那份）。
+       *
+       * 记的是 **id** 不是内容：用户改好工作流之后老任务跟着用新版，
+       * 这正是「我修好了工作流，重跑一遍」想要的行为。
+       */
+      workflowId: typeof raw?.settings?.workflowId === "string" ? raw.settings.workflowId : "",
+      /** 参数面板里改过的值（`节点id.输入名` → 值）；空对象 = 全用工作流里的默认值。 */
+      params:
+        raw?.settings?.params !== null && typeof raw?.settings?.params === "object" && !Array.isArray(raw?.settings?.params)
+          ? Object.fromEntries(
+              Object.entries(raw.settings.params as Record<string, unknown>).filter(
+                (entry): entry is [string, string | number | boolean] =>
+                  typeof entry[1] === "string" || typeof entry[1] === "number" || typeof entry[1] === "boolean"
+              )
+            )
+          : {}
     },
     keying: {
       enabled: raw?.keying?.enabled === true,
@@ -315,9 +339,12 @@ export async function generateImageItem(jobId: string, index: number): Promise<v
       prompt,
       images: refs,
       size: job.settings.size || imageSizeOf(config),
-      // 水印是火山方舟特有的参数（自定义后端忽略它）。任务上那份是旧版本留下的
+      // 水印是方舟 / ToAPIs 系的参数（ComfyUI 忽略它）。任务上那份是旧版本留下的
       // 覆盖位，仍然尊重；与全局设置取或，两种写法都不会让水印「突然消失」。
-      watermark: imageWatermarkOf(config) || job.settings.watermark === true
+      watermark: imageWatermarkOf(config) || job.settings.watermark === true,
+      // 空串 = 跟随全局当前那份；参数只传用户改过的那些。
+      workflowId: job.settings.workflowId === "" ? undefined : job.settings.workflowId,
+      params: job.settings.params
     });
 
     const relative = `out/img-${String(index).padStart(2, "0")}.${result.ext}`;

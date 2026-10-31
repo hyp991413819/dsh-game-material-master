@@ -343,7 +343,7 @@ const api = new Proxy(
  */
 const EXPECTED_HOOKS = {
   StudioPanel: 21,
-  ImageModule: 17,
+  ImageModule: 19,
   SequenceModule: 17
 };
 
@@ -1366,28 +1366,31 @@ section("功能管理（隐藏模块）");
     check("设置页说明隐藏后 AI 也调不到", textOf(settings).includes("对话里的 AI 也无法调用它"));
 
     /**
-     * 生图后端：ark / custom 两组配置同屏，只由「当前使用」那一个下拉决定用哪一组。
+     * 生图后端：只剩 ComfyUI 与 ToAPIs 两家。
      *
-     * 这两组**必须同时渲染**：用户经常要先配好自定义服务、点一次「测试连接」，
-     * 确认能出图之后再把它切成当前后端。只渲染「当前那一组」的话，
-     * 没配火山方舟 Key 的用户连自己的本地服务都配不上。
+     * 两组**必须同时渲染**：用户经常要先配好本机 ComfyUI、点一次「测试连接」，
+     * 确认能出图之后再把它切成当前后端。
      */
     const providerSelect = collect(settings, (node) => node.props?.["data-testid"] === "cfg-image-provider")[0];
     check("设置页有「生图后端」选择器", providerSelect !== undefined);
-    check("后端选择器包含 ark / custom / toapis", JSON.stringify(collect(providerSelect, (node) => node.type === "option").map(node=>node.props.value).sort()) === JSON.stringify(["ark","custom","toapis"]));
-    check("ToAPIs 独立设置组存在", collect(settings,node=>node.props?.["data-testid"] === "cfg-toapis").length === 1);
-    check("ToAPIs API Key 使用密码框", collect(collect(settings,node=>node.props?.["data-testid"] === "cfg-toapis")[0],node=>node.props?.type === "password").length === 1);
+    check(
+      "后端选择器只剩 comfyui / toapis",
+      JSON.stringify(collect(providerSelect, (node) => node.type === "option").map((node) => node.props.value).sort()) === JSON.stringify(["comfyui", "toapis"])
+    );
+    check("ToAPIs 独立设置组存在", collect(settings, (node) => node.props?.["data-testid"] === "cfg-toapis").length === 1);
+    check("ToAPIs API Key 使用密码框", collect(collect(settings, (node) => node.props?.["data-testid"] === "cfg-toapis")[0], (node) => node.props?.type === "password").length === 1);
     check("缺 Key 时给出「还不能开跑」的提示，而不是静默", textOf(settings).includes("还不能开跑"));
-    check("火山方舟那一组标注了当前使用", textOf(settings).includes("当前使用"));
+    check("ComfyUI 那一组标注了当前使用", textOf(settings).includes("当前使用"));
 
-    // 默认协议是 openai：协议下拉、地址、模型名、尺寸、测试按钮都要在。
-    check("自定义那一组有协议下拉（三种协议由宿主给）", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-protocol").length === 1);
-    check("自定义那一组有 Base URL 与模型名输入框", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-base-url").length === 1 && collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-model").length === 1);
-    check("自定义那一组有输出尺寸输入框", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-size").length === 1);
-    check("OpenAI 协议不显示 ComfyUI 的工作流文本框（调了也没用的控件不该出现）", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-workflow").length === 0);
-    check("自定义那一组也有自己的「测试连接」", textOf(settings).includes("测试连接（会真实生成 1 张测试图"));
+    // 只剩 ComfyUI 一个协议，所以不再有「协议」下拉 —— 有它才是回归。
+    check("自定义生图不再有协议下拉（只剩 ComfyUI）", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-protocol").length === 0);
+    check("不再有「模型名」输入框（模型由工作流决定）", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-model").length === 0);
+    check("ComfyUI 那一组有 Base URL 输入框", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-base-url").length === 1);
+    check("ComfyUI 那一组有输出尺寸输入框", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-size").length === 1);
+    check("ComfyUI 那一组有自己的「测试连接」", textOf(settings).includes("测试连接（会真实生成 1 张测试图"));
+    check("工作流文本框常驻（不再按协议条件渲染）", collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-workflow").length === 1);
 
-    // ── 分类页签：六个入口、六个面板常驻挂载 ──────────────────────────────
+    // ── 分类页签：七个入口、七个面板常驻挂载 ──────────────────────────────
     const tabButtons = collect(settings, (node) => typeof node.props?.["data-testid"] === "string" && node.props["data-testid"].startsWith("cfg-tab-"));
     const panels = collect(settings, (node) => typeof node.props?.["data-testid"] === "string" && node.props["data-testid"].startsWith("cfg-panel-"));
     check("设置页有 7 个分类页签", tabButtons.length === 7, `${tabButtons.length} 个`);
@@ -1395,32 +1398,30 @@ section("功能管理（隐藏模块）");
     check("七个页签面板都常驻挂载（只是 hidden）", panels.length === 7, `${panels.length} 个`);
     check("非当前面板被 hidden", panels.find((node) => node.props["data-testid"] === "cfg-panel-music")?.props?.hidden === true);
     check("当前面板没有 hidden", panels.find((node) => node.props["data-testid"] === "cfg-panel-image")?.props?.hidden === false);
-    // 当前生图后端（ark）展开，另外两张折叠；内容仍在树里，方便先配置再切换。
-    const arkGroup = collect(settings, (node) => node.props?.["data-testid"] === "cfg-ark-group")[0];
+    // 当前生图后端（ComfyUI）展开，ToAPIs 折叠；内容仍在树里，方便先配置再切换。
     const customGroup = collect(settings, (node) => node.props?.["data-testid"] === "cfg-custom-group")[0];
-    check("当前后端卡默认展开", arkGroup?.props?.["data-open"] === "true");
-    check("非当前后端卡默认折叠", customGroup?.props?.["data-open"] === "false");
-    check("折叠的后端仍渲染，可先配置再切换", collect(customGroup, (node) => node.props?.["data-testid"] === "cfg-custom-protocol").length === 1);
+    const toapisGroup = collect(settings, (node) => node.props?.["data-testid"] === "cfg-toapis")[0];
+    check("当前后端卡默认展开", customGroup?.props?.["data-open"] === "true");
+    check("非当前后端卡默认折叠", toapisGroup?.props?.["data-open"] === "false");
+    check("折叠的后端仍渲染，可先配置再切换", collect(toapisGroup, (node) => node.props?.type === "password").length === 1);
     check("ToAPIs 视频单独成组", collect(settings, (node) => node.props?.["data-testid"] === "cfg-toapis-video").length === 1);
     const miscPanel = panels.find((node) => node.props["data-testid"] === "cfg-panel-misc");
     check("ffmpeg 状态归到「功能与数据」", textOf(miscPanel).includes("ffmpeg"));
     check("数据路径也在「功能与数据」里", textOf(miscPanel).includes("所有项目"));
 
-    // 切到 ComfyUI：工作流文本框与保存按钮出现（UTF-8 JSON 不能每敲一个字就提交一次）。
+    // 后端就绪 + 多工作流：工作流列表、切换、另存 / 删除都要在。
     const comfyConfig = {
       ...featureConfig,
-      imageProvider: "custom",
-      customProtocol: "comfyui",
+      imageProvider: "comfyui",
       customBaseUrl: "http://127.0.0.1:8188",
-      customModel: "sdxl.safetensors",
       customSize: "1024x1024",
-      customWorkflow: '{"1":{}}',
-      customProtocols: [
-        { id: "openai", label: "OpenAI API", baseUrl: "https://api.openai.com/v1", hint: "hint" },
-        { id: "comfyui", label: "ComfyUI API", baseUrl: "http://127.0.0.1:8188", hint: "hint" },
-        { id: "sdwebui", label: "Stable Diffusion WebUI API", baseUrl: "http://127.0.0.1:7860", hint: "hint" }
+      workflows: [
+        { id: "w1", name: "文生图 · 25 步", json: '{"1":{}}' },
+        { id: "w2", name: "带参考图", json: '{"2":{}}' }
       ],
-      imageProviderSummary: "自定义 · ComfyUI API · http://127.0.0.1:8188",
+      activeWorkflowId: "w1",
+      comfyImageProvider: { baseUrl: "http://127.0.0.1:8188", label: "ComfyUI API", hint: "POST {base}/prompt" },
+      imageProviderSummary: "ComfyUI · http://127.0.0.1:8188 · 文生图 · 25 步",
       imageProviderBlocker: null,
       customImageBlocker: null
     };
@@ -1431,29 +1432,39 @@ section("功能管理（隐藏模块）");
         saved2.push(payload);
         return Promise.resolve({ ...comfyConfig, ...payload });
       },
-      testArk: () => Promise.resolve({}),
-      testCustomImage: () => Promise.resolve({ provider: "自定义 · ComfyUI API", bytes: 1 }),
+      testCustomImage: () => Promise.resolve({ provider: "ComfyUI", bytes: 1 }),
       testMinimax: () => Promise.resolve({})
     };
-    HOOK.slots = [0, comfyConfig, "", "", "", null, null, null, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "image"];
+    HOOK.slots = [0, comfyConfig, "", null, null, "", undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "image"];
     HOOK.cursor = 0;
     hookOverflow = false;
     const comfySettings = ConfigSection({ api: api2 });
     const workflowBox = collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-custom-workflow")[0];
-    check("切到 ComfyUI 后出现工作流文本框", workflowBox !== undefined);
-    check("工作流文本框里是已经存过的那份", workflowBox?.props?.value === '{"1":{}}', String(workflowBox?.props?.value).slice(0, 40));
-    check("后端切换器选中自定义", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-image-provider")[0]?.props?.value === "custom");
-    check("切到自定义后该卡展开", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-custom-group")[0]?.props?.["data-open"] === "true");
-    check("非当前 Ark 卡折叠", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-ark-group")[0]?.props?.["data-open"] === "false");
+    check("工作流文本框存在", workflowBox !== undefined);
+    check("工作流文本框里是当前那一份", workflowBox?.props?.value === '{"1":{}}', String(workflowBox?.props?.value).slice(0, 40));
+    check("后端切换器选中 ComfyUI", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-image-provider")[0]?.props?.value === "comfyui");
+    check("ComfyUI 卡展开", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-custom-group")[0]?.props?.["data-open"] === "true");
+    check("ToAPIs 卡折叠", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-toapis")[0]?.props?.["data-open"] === "false");
     check("后端就绪时给出「后端已就绪」而不是阻塞提示", textOf(comfySettings).includes("后端已就绪") && !textOf(comfySettings).includes("还不能开跑"));
+    // 多工作流：下拉里有全部两份，名字输入框显示当前那份。
+    const workflowPick = collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-workflow-pick")[0];
+    check("设置页有「编辑哪一份」工作流下拉", workflowPick !== undefined);
+    check(
+      "工作流下拉列出全部保存的份数",
+      collect(workflowPick, (node) => node.type === "option").length === 2,
+      String(collect(workflowPick, (node) => node.type === "option").length)
+    );
+    check("工作流名字输入框显示当前那份的名字", collect(comfySettings, (node) => node.props?.["data-testid"] === "cfg-workflow-name")[0]?.props?.value === "文生图 · 25 步");
+    check("有「另存为新工作流」按钮", textOf(comfySettings).includes("另存为新工作流"));
+    check("有「删除这份」按钮", textOf(comfySettings).includes("删除这份"));
     // NumField 是函数组件，`textOf` 展不开它，只能按 props.label 找。
     check(
-      "ComfyUI 下显示采样步数 / CFG 等高级参数",
+      "ComfyUI 下显示采样步数 / CFG 等参数",
       collect(comfySettings, (node) => node.props?.label === "采样步数").length === 1 &&
         collect(comfySettings, (node) => node.props?.label === "CFG / 引导强度").length === 1
     );
-    check("超时对所有协议都显示（不受协议条件块影响）", collect(comfySettings, (node) => node.props?.label === "请求超时（毫秒，本地模型建议给足）").length === 1);
-    check("协议说明里写出真实端点", textOf(comfySettings).includes("请求端点"));
+    check("超时仍然显示", collect(comfySettings, (node) => node.props?.label === "请求超时（毫秒，本地模型建议给足）").length === 1);
+    check("端点说明里写出真实端点", textOf(comfySettings).includes("请求端点"));
     // 每敲一个字都不发请求：草稿只在变化后由「保存工作流」提交。
     workflowBox.props.onChange({ target: { value: '{"1":{"a":1}}' } });
     check("改工作流不立刻写配置（大 JSON 每字符一次往返会卡）", saved2.length === 0, JSON.stringify(saved2));

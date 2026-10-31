@@ -276,7 +276,16 @@ async function main() {
   };
 
   const emptyIntake = await run("game_material_intake", { module: "sprite" });
-  check("没配 Key 时给出 blocker", emptyIntake.blockers.some((text) => text.includes("火山方舟")), emptyIntake.blockers.join("；"));
+  /**
+   * 生图后端现在是本机 ComfyUI + 一份内置工作流，**开箱即用**，所以默认 intake
+   * 不该报 blocker。这条改成反向验证：真给出 blocker 时，文案必须点名去哪里配
+   * （只说「未配置」会让人在设置页里来回找）。
+   */
+  check(
+    "后端就绪时 intake 不报 blocker",
+    Array.isArray(emptyIntake.blockers) && emptyIntake.blockers.length === 0,
+    emptyIntake.blockers.join("；")
+  );
   check(
     "必问审核模式，且只有 auto / manual 两个选项",
     Array.isArray(emptyIntake.reviewModeQuestion?.options) &&

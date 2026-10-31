@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { appendJobLog } from "./jsonio.js";
-import { ARK_MODEL_PRESETS, CUSTOM_PROTOCOLS, CUSTOM_PROTOCOL_DEFAULTS, DEFAULT_CONFIG, ROW_ORDER_VERSION, MINIMAX_HOST_PRESETS, MINIMAX_MODEL_PRESETS, loadConfig, maskConfig, migrateLegacyDataRoot, projectsRoot, saveConfig } from "./config.js";
+import { DEFAULT_CONFIG, ROW_ORDER_VERSION, COMFYUI_PROVIDER_INFO, MINIMAX_HOST_PRESETS, MINIMAX_MODEL_PRESETS, loadConfig, maskConfig, migrateLegacyDataRoot, projectsRoot, saveConfig } from "./config.js";
 import {
   DEFAULT_ROW_ORDER,
   DIRECTION_KEYS,
@@ -31,8 +31,9 @@ import {
 } from "./directions.js";
 import { DEFAULT_KEY_COLOR, normalizeKeyColor } from "./keycolor.js";
 import { checkFfmpeg } from "./media.js";
-import { testArk } from "./ark.js";
 import { customImageBlocker, imageModelOf, imageSizeOf, imageProviderBlocker, imageProviderSummary, testCustomImage } from "./imageprovider.js";
+import { pickWorkflow } from "./workflows.js";
+import { discoverWorkflowParams } from "./workflowparams.js";
 import {
   detectComfyBindings,
   fetchComfyObjectInfo,
@@ -280,20 +281,8 @@ export class GameStudioGateway extends TypertRemoteService {
       ...maskConfig(config),
       rowOrder: [...config.rowOrder],
       defaults: { ...DEFAULT_CONFIG },
-      arkModels: ARK_MODEL_PRESETS,
-      /**
-       * 生图后端的呈现材料。
-       *
-       * `imageProviderBlocker` 由宿主算好回传，界面与**对话工具面**共用同一份判断
-       * （tools.ts 的 intake 也读它）：两边各写一套「配好了没」的规则，
-       * 迟早会出现「界面说没配好、模型说配好了」这种互相矛盾的提示。
-       */
-      customProtocols: CUSTOM_PROTOCOLS.map((key) => ({
-        id: key,
-        label: CUSTOM_PROTOCOL_DEFAULTS[key].label,
-        baseUrl: CUSTOM_PROTOCOL_DEFAULTS[key].baseUrl,
-        hint: CUSTOM_PROTOCOL_DEFAULTS[key].hint
-      })),
+      /** ComfyUI 的默认地址与端点说明（协议只剩它一个，不再有「协议切换」）。 */
+      comfyImageProvider: COMFYUI_PROVIDER_INFO,
       imageProviderSummary: imageProviderSummary(config),
       /** 当前生效的生图模型（模块里那个只读展示位用它，比 summary 短）。 */
       imageModel: imageModelOf(config),
@@ -354,7 +343,7 @@ export class GameStudioGateway extends TypertRemoteService {
   }
   /**
   * 保存配置。
-  * 约定：`arkApiKey` / `minimaxApiKey` / `customApiKey` **只有用户确实改了才带**——
+  * 约定：`minimaxApiKey` / `customApiKey` / `toapisApiKey` **只有用户确实改了才带**——
   * 不带就是保持原值，带空串才是清除。这样界面就不必把明文 key 回填到输入框里。
   */
   async saveConfig(payload) {
@@ -373,9 +362,7 @@ export class GameStudioGateway extends TypertRemoteService {
       "toapisVideoAspectRatio",
       "toapisTimeoutMs",
       "imageProvider",
-      "customProtocol",
       "customBaseUrl",
-      "customModel",
       "customSize",
       "customNegativePrompt",
       "customSteps",
@@ -383,13 +370,10 @@ export class GameStudioGateway extends TypertRemoteService {
       "customSampler",
       "customDenoising",
       "customSeed",
-      "customWorkflow",
+      // 多工作流：整份列表由界面算好后整体回写（增 / 删 / 改名 / 改内容都在界面侧完成）。
+      "workflows",
+      "activeWorkflowId",
       "customTimeoutMs",
-      "arkBaseUrl",
-      "arkModel",
-      "arkSize",
-      "arkWatermark",
-      "arkTimeoutMs",
       "minimaxBaseUrl",
       "minimaxModel",
       "minimaxDuration",
@@ -464,8 +448,6 @@ export class GameStudioGateway extends TypertRemoteService {
     }
     if (typeof input.toapisApiKey === "string") patch.toapisApiKey = input.toapisApiKey.trim();
     if (input.clearToapisApiKey === true) patch.toapisApiKey = "";
-    if (typeof input.arkApiKey === "string")
-      patch.arkApiKey = input.arkApiKey.trim();
     if (typeof input.minimaxApiKey === "string")
       patch.minimaxApiKey = input.minimaxApiKey.trim();
     if (typeof input.customApiKey === "string")
@@ -476,8 +458,6 @@ export class GameStudioGateway extends TypertRemoteService {
     // 音效模块的 Key 是**语音控制台**的 API Key（X-Api-Key），与方舟 Key 不同源。
     if (typeof input.sfxApiKey === "string")
       patch.sfxApiKey = input.sfxApiKey.trim();
-    if (input.clearArkApiKey === true)
-      patch.arkApiKey = "";
     if (input.clearMinimaxApiKey === true)
       patch.minimaxApiKey = "";
     if (input.clearCustomApiKey === true)
@@ -498,20 +478,61 @@ export class GameStudioGateway extends TypertRemoteService {
     clearScoreDepsCache();
     return this.decorateConfig(saved);
   }
-  async testArk() {
-    const config = await loadConfig();
-    if (config.arkApiKey.trim() === "")
-      throw new Error("尚未配置火山方舟 API Key");
-    return testArk({
-      baseUrl: config.arkBaseUrl,
-      apiKey: config.arkApiKey,
-      model: config.arkModel,
-      timeoutMs: config.arkTimeoutMs
-    });
-  }
-  /** 测自定义生图后端。与 testArk 对称，各自测各自那一组配置。 */
+  /** 测 ComfyUI 生图后端（火山方舟已移除，这里只留一个入口）。 */
   async testCustomImage() {
     return testCustomImage();
+  }
+  /**
+   * 读一份工作流的可设置参数。
+   *
+   * 参数从 ComfyUI 的 `/object_info` 现场读（拿到真实类型与取值范围），
+   * 拿不到时退化成「按工作流里已有的值猜类型」—— ComfyUI 没开也要能编辑工作流。
+   */
+  async getWorkflowParams(payload) {
+    const input = asRecord(payload);
+    const config = await loadConfig();
+    const workflowId = typeof input.workflowId === "string" ? input.workflowId : config.activeWorkflowId;
+    const inline = typeof input.json === "string" ? input.json.trim() : "";
+    const saved = pickWorkflow(config.workflows, workflowId);
+    const text = inline !== "" ? inline : saved.json;
+
+    let parsed;
+    try {
+      parsed = parseComfyWorkflow(text);
+    } catch (error) {
+      return {
+        ok: false,
+        workflowId: saved.id,
+        workflowName: saved.name,
+        params: [],
+        error: `工作流 JSON 解析失败：${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+    if (!parsed.ok) {
+      return { ok: false, workflowId: saved.id, workflowName: saved.name, params: [], error: parsed.error };
+    }
+
+    // 查节点定义：失败只记一条 note，不抛错（表单照样要能渲染）。
+    const classTypes = Object.values(parsed.workflow as Record<string, { class_type?: unknown }>)
+      .map((node) => (typeof node?.class_type === "string" ? node.class_type : ""))
+      .filter((item) => item !== "");
+    let info = {};
+    let note;
+    try {
+      info = await fetchComfyObjectInfo({ baseUrl: config.customBaseUrl, timeoutMs: 8000, cookies: config.comfyCookies }, classTypes);
+    } catch (error) {
+      note = `读不到 ComfyUI 的节点定义（${error instanceof Error ? error.message : String(error)}），参数类型按工作流里的值推断。`;
+    }
+    const params = discoverWorkflowParams(parsed.workflow, info);
+    return {
+      ok: true,
+      workflowId: saved.id,
+      workflowName: saved.name,
+      /** 读到了几个节点定义（0 = 全靠推断）。 */
+      described: Object.keys(info).length,
+      params,
+      note: note ?? null
+    };
   }
   async testMinimax() {
     const config = await loadConfig();

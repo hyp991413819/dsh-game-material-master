@@ -8,9 +8,9 @@
 # 游戏素材大师 · DSH 插件
 
 从一张设定图出发，批量产出游戏要用的角色素材。生图走**可切换的后端**——默认
-**火山方舟 Seedream**，也可以换成用户自己的服务（OpenAI 兼容 / ComfyUI / Stable Diffusion WebUI
-三种协议，见 `src/imageprovider.ts` 与 `src/customimage.ts`）；
-**MiniMax** 负责图生视频（始终只走它，不受生图后端影响），抠绿幕与合成全部在本地用
+**本机 ComfyUI**（可保存多份工作流、参数面板按节点定义自动生成），也可以切 **ToAPIs** 异步接口
+（见 `src/imageprovider.ts`、`src/customimage.ts`、`src/workflows.ts`、`src/workflowparams.ts`）；
+**MiniMax** 负责图生视频（默认只走它，也可改走 ComfyUI / ToAPIs），抠绿幕与合成全部在本地用
 ffmpeg + 内置 JS 完成——不需要任何系统图像库，也不需要把素材传到第三方服务。
 
 > 生图后端的分发只在一个地方：`imageprovider.generateImageWithProvider`。所有生图调用点
@@ -611,10 +611,107 @@ dsh --profile gmmweb --port 19388     # 打印 http://127.0.0.1:19388/?token=…
 每张生成完，若开着抠像会自动抠一遍；也可以**把已有图片直接传进来只做抠像**——
 这样它同时也是一个通用的绿幕抠像工具。
 
-- 生成张数 1~8，按 Seedream 刊例约 0.2 元/张
+- 生成张数 1~8
 - 每张可单独重新生成、删除、下载原图、下载透明 PNG（未抠像时原图是唯一产物，所以原图也有独立下载入口）
 - 每张会记录**背景占比**，用来判断抠像是否可信（占比异常说明绿幕没生成好）
 - 每张可单独打「通过」，也可以一键全部通过；对话里的 `game_material({action:"approve"})` 改的是同一份标记
+
+### 生图后端：只剩 ComfyUI 与 ToAPIs
+
+`config.imageProvider` 只有两个值：
+
+| 值 | 说明 |
+|---|---|
+| `comfyui`（默认） | 本机 / 自建 ComfyUI，走 `customimage.generateComfyImage` |
+| `toapis` | ToAPIs 异步接口，走 `toapis.generateToapisImage` |
+
+**火山方舟 Seedream 与 OpenAI / SD WebUI 两种自定义协议已经删除。**
+老配置里的 `"ark"` / `"custom"` 由 `normalizeConfig` 归一到 `comfyui` ——
+留着旧值只会得到一个「后端不存在」的运行时错误，而那个错误发生在生图时，
+离「升级插件」这件事很远。
+
+`imageModelOf` 在 ComfyUI 侧回的是**当前工作流的名字**（不是模型名）：
+ComfyUI 的模型由工作流里的 `CheckpointLoaderSimple.ckpt_name` 决定，
+插件没有一个全局的「模型」概念，界面角标显示工作流名比显示空字符串有用。
+
+### 多工作流（`src/workflows.ts`）
+
+以前只有一个 `customWorkflow` 字符串 —— 想同时留着「文生图」「带参考图」两份就得来回覆盖粘贴，
+粘错一次**不报任何错**，只是下一张图的构图全变了。
+
+现在是一份有序列表：
+
+```json
+{ "workflows": [ { "id": "w…", "name": "文生图 · 25 步", "json": "{…}" } ], "activeWorkflowId": "w…" }
+```
+
+三条不变式（每条都对应一类真机坏法）：
+
+1. **列表永远非空** —— 空列表等于「没有工作流可选」，生图按钮会变成死的。
+   删到最后一份时自动补回内置的 `DEFAULT_COMFY_IMAGE_WORKFLOW`。
+2. **id 必须唯一** —— 任务靠 id 找工作流，重复 id 会让「切了没反应」。
+   `normalizeWorkflows` 遇到重复 id 会重新发一个。
+3. **json 必须是能解析的非空对象** —— 存进去的时候校验，比等到提交时 400 好得多。
+   `updateWorkflow` 对非法 JSON **整个拒绝并回 `error`**，不静默存下一份坏的。
+
+`pickWorkflow` 在列表意外为空时也**不抛**，回一份空壳 —— 它被「读配置的每一条路径」
+调用（界面角标 / 任务创建 / 生图分发），抛出去就是整个设置页打不开。
+
+**图片任务记的是 `workflowId`，不是工作流内容**：用户改好工作流之后老任务跟着用新版，
+这正是「我修好了工作流，重跑一遍」想要的行为。`settings.workflowId` 为空 = 跟随全局当前那份。
+
+### 工作流参数面板（`src/workflowparams.ts`）
+
+每份工作流的**可设置参数自动列在任务面板上**：类型（数字 / 文本 / 开关 / 下拉）、
+取值范围、枚举候选值全部**从 ComfyUI 的 `/object_info` 现场读**。
+
+为什么不手写参数清单：清单一定会和工作流脱节，而脱节的表现是「控件调了没反应」、
+不报任何错 —— 这比控件根本不存在更坏。
+
+`discoverWorkflowParams(workflow, info)` 的规则：
+
+- 只暴露**本身是字面量**的输入；`["4", 0]` 这种是连线，改了会破坏拓扑。
+- 控件类型由节点定义决定：`INT` / `FLOAT` → 数字框（带 min / max / step），
+  枚举（`[["euler","ddim",…], {}]`）→ 下拉框，`STRING` → 文本框（`multiline` 时多行）。
+- `/object_info` 拿不到时（ComfyUI 没开、节点包没装）**不抛错**，退化成按工作流里已有的值猜类型；
+  表单照常能编辑，生图本身会给出更有用的错误。
+- 顺序按节点 id 数字升序、再按定义里的输入顺序 —— 表单顺序稳定，不会每次刷新换个样子。
+
+**参数只存用户改过的那些**（`settings.params`，键是 `节点id.输入名`）。
+把每个参数都抄一遍没有意义，还会让任务文件变得很大。
+
+### 参数类型必须按节点定义判定（踩过的坑）
+
+`applyWorkflowParams` 的第三个参数是 `discoverWorkflowParams` 的结果，
+**不能只看工作流里的当前值**：那些槽位往往还是 `"{{seed}}"` 这样的字符串占位符，
+按值猜类型会把数字写成字符串，而 ComfyUI 的 `KSampler.seed` 是 int，直接报 type 错误。
+
+调用链：`generateImageWithProvider` 发现有 `params` 时先查一次 `paramKindsOf()`（内部就是
+`/object_info` + `discoverWorkflowParams`），把类型表传给 `generateComfyImage`。
+查不到时传 `undefined`，退回按当前值 —— 总比一律写字符串好。
+
+写回的顺序也是刻意的：**占位符替换 → 参数面板 → 提交**。
+参数面板显示的是工作流里的真实输入，用户在那里改的东西必须赢过占位符与默认值。
+
+### 界面两处
+
+- **设置页**：只剩 ComfyUI 与 ToAPIs 两组。ComfyUI 那一组里有工作流下拉（编辑哪一份）、
+  名字输入框、JSON 文本域、保存 / 另存为新工作流 / 删除这份。工作流 JSON 走**草稿**，
+  点「保存工作流」才提交 —— 几 KB 的 JSON 每敲一个字往返一次会明显卡，
+  而且中途的非法 JSON 存进去之后，下一次生成要在几十秒后才报错。
+- **任务面板**：工作流下拉（跟随全局 / 具体某份）+ 参数控件。
+  参数控件按 `param.kind` 分派：`boolean` → 开/关下拉，`enum` → 下拉，`int`/`float` → `NumField`，
+  其余 → 文本框。参数改动**只存改过的那几个键**，`saveJob({ settings })` 走已有的保存队列。
+
+### 自检
+
+- `verify-custom-image.mjs`（**74 项**）：起一台假 ComfyUI，覆盖尺寸写法、提交 → 轮询 → 取图的
+  端点顺序、占位符按 JSON 类型替换、参考图上传与 `LoadImage` 兜底、失败路径（提交被拒 / 执行报错 /
+  空工作流 / 非法 JSON）、**参数发现与应用**（含「没有声明时会写错类型」这条反向验证）、
+  多工作流六个函数、配置归一化与分发层真的换了端点。
+- `verify-host.mjs`：配置读写、多工作流的增删改与「删空补一份」、`activeWorkflowId` 归一化、
+  老 `ark` / `custom` 迁移。
+- `verify-feedback.mjs`：设置页只剩两家后端、没有协议下拉、工作流列表与另存 / 删除按钮。
 
 ---
 
@@ -2214,7 +2311,7 @@ node scripts/dsh-web-cookie.mjs 127.0.0.1:43121 --json
 | `node scripts/e2e-ui.mjs` | 模块九**真实链路端到端**（**会占显卡几分钟**，零计费）：真调本机 ComfyUI 跑 MOSS-Image 生图 → 按画框切图（默认 `wevisone`）→ 导出 zip，产物留在 `<DSH_HOME>/game-material-master/ui-jobs/` 并打印绝对路径。先跑 `testUiConnection` 确认节点包与权重都在，缺什么直接点名 |
 | `node scripts/probe-ui-matte.mjs` + `probe-ui-matte-report.mjs` | 抠图方案 **A/B 对照工具**（不是自检；`probe` 会占显卡、`report` 只读）。`probe` 拿**同一张**已渲染的 MOSS 图，把 `wevisone` / `qwen` 各跑一遍落到 `output/gmm_ab_*/`；`report` 用内置 PNG 解码量 **alpha 分布 / 内部不透明度 / 与源图的 RGB 偏差**。⚠️ 这两个脚本存在的理由：曾用**两次不同的 MOSS 生图**分别跑两种抠图，把「源图本身模糊」误判成「WeVisOne 对大面板不行」—— 同一张清晰源图上 WeVisOne 的 RGB 偏差只有 **0.52**（逐像素忠实），Qwen 是 **30.11**（重绘并偏色）。**换抠图方案必须用同一张源图对照** |
 | `node scripts/e2e-map.mjs` | 模块六**真实链路端到端**（不联网、不花钱）：内置素材（5 张，含 4 张 A2）→ 再合成导入一张 A2 与一张普通图 → 画满 24×24（自动连接长边）→ 叠一层普通图块 → 断言计划里「一格四条 op」→ 查一次跨边界的视口（环绕时 `visibleKeys` 会出现负数 key）→ 撤销 / 重做 → 一键生成三种地图 → 预览 → 导出，**故意留下产物**并打印绝对路径，方便人眼验收 |
-| `node scripts/verify-custom-image.mjs` | **自定义生图后端**（**68 项**）：起一台本地假服务端把 OpenAI / ComfyUI / SD WebUI 三种协议都模拟出来，全程离线零计费。断言的重点不是「有没有返回字节」而是**请求真的长对了**：端点路径、body 字段名（`cfg_scale` / `denoise` / `init_images`…）、参考图的形态（multipart / 纯 base64 / 上传后的文件名）、`images/edits` 端点不存在时退回 `generations` 的 `image` 字段、ComfyUI 的轮询（第一次故意返回空）、**占位符的 JSON 类型**（`{{width}}` 必须是数字，写成字符串 ComfyUI 会报 type 错；提示词里的引号换行不能破坏工作流 JSON）、没写 `{{image}}` 时自动改 `LoadImage` 节点，以及 `imageProvider` 一个字段切换后所有调用点真的换了端点（Ark 那边一次都没打）。另含配置归一化（脏数据按上下限收敛）与「报错要讲清改哪里」 |
+| `node scripts/verify-custom-image.mjs` | **ComfyUI 生图后端**（**74 项**）：起一台本地假 ComfyUI，断言的重点不是「有没有返回字节」而是**请求真的长对了** —— 端点与顺序（上传参考图 → `/prompt` → `/history` → `/view`）、**占位符按 JSON 类型替换**（`{{width}}` 必须是数字）、参考图上传后文件名写进工作流（没写 `{{image}}` 时改 `LoadImage`）、四条失败路径（提交被拒 / 执行报错带节点名 / 空工作流 / 非法 JSON）、**参数发现与应用**（类型 / 范围 / 枚举候选来自节点定义，且**参数面板的值赢过占位符**），以及一条反向验证：**没给类型声明时会写错类型** —— 这条记录了「为什么必须传 declared」。另含多工作流六个纯函数（增 / 改名 / 删 / 删空补一份 / 丢非法 / 修重复 id）与配置归一化（老 `ark` / `custom` 归一到 `comfyui`、`customWorkflow` 迁移成列表一份）。 |
 | `node scripts/verify-comfy.mjs` | 本地 ComfyUI 后端（**124 项**，纯本地、不联网、不花钱、**不需要真装 ComfyUI**）：脚本自己用 `node:http` 在随机端口起一个 mock，覆盖地址归一化与注入点解析、`parseComfyWorkflow` 的 **UI 格式自动转换**（官方 All-in-One 形状的夹具：控件值按 `widgets_values` 顺序取、`randomize` 不当种子、连线写成 `[来源节点, 槽位]`、没连的 `first` 留给探测、便签与静音节点丢掉、`droppedWidgets` 计数、新版对象形式的 `links`）、探测的**四级顺序**（显式覆盖回退 / 已有字面量量 / 已有 `LoadImage` / `object_info` 声明的 optional IMAGE）、两个 `LoadImage` 时首尾各用其一、注入的纯函数性与「插入节点只写 `image` 一个键」、`first_frame_reference` 自动打开、无首帧位置报错、以及 HTTP 层（`/system_stats`、`/queue` 排队中、`/history` 执行失败带出 node_type、上传 multipart、`node_errors` / `error` 两条失败路径、从 outputs 挑 mp4 而不挑 png、只有图片时判失败、Cookie 的归一化与「每个请求都真的带上了这个头」） |
 | `node scripts/verify-host.mjs` | 宿主半区全链路（**387 项**）：六个模块的本地链路、**阶段①的转圈截帧（合成一段「转动」视频跑真实 ffmpeg，覆盖截帧位置、按比例换算、下游作废、切换生成方式）**、**换源图后由旧源图派生的产物整体作废（状态清空 + 磁盘文件真的删掉）**、**转圈首帧的时间兜底（正面图比源图旧时改用源图）**、**模块五的资源路由（真起一台 server 走 HTTP 取回 `iso-assets` 的素材图，并验证 403 与目录穿越）**、资源路由（含 `turn/` 白名单）、预览页的 `text/html`、目录穿越与 id 前缀校验、**本地自选视频（真实 ffmpeg 造的 MP4 走 `uploadVideo`：容器嗅探 / 槽位校验 / 下游作废 / 转圈导入后自动抽帧 / 摘掉在跑的远端任务号）与中间图片 zip（自检里带一个真解包的 ZIP 读取器：逐条比 CRC 与长度、断言八方向图 / 转圈候选帧 / 绿幕帧 / 抠像帧 / 整图都在包里，并真起一台 server 把 zip 下载回来）** |
 | `node scripts/find-missing-i18n.mjs` | **工具**（不是断言）：列出所有还没进词条表的 `T("…")` 原文，直接输出可粘贴的条目 |
@@ -2232,7 +2329,7 @@ node scripts/verify-minimax.mjs    # MiniMax 协议层（85 项，含请求体�
 node scripts/verify-comfy.mjs      # 本地 ComfyUI 后端（124 项，自起 mock ComfyUI，纯本地不花钱）
 node scripts/verify-pipeline.mjs   # 抽帧/抠像/合成链路（40 项，含回归用例）
 node scripts/verify-host.mjs       # 宿主冒烟（387 项，真实 cordis + 真实 HTTP；含内置默认提示词的语言切换、hiddenModules 落盘与收敛、生图后端两组配置与阻塞判断、模块五资源路由）
-node scripts/verify-custom-image.mjs # 自定义生图后端三协议（68 项，本地假服务端；离线、零计费）
+node scripts/verify-custom-image.mjs # ComfyUI 生图后端（74 项，本地假服务端；离线、零计费）
 node scripts/verify-comfy.mjs      # 本地 ComfyUI 后端（124 项，自起 mock ComfyUI，纯本地、不用装 ComfyUI）
 node scripts/verify-client.mjs     # 浏览器半区契约（362 项：阶段 ctx 键必须被转发、每个生成类调用点都带 loading 反馈、转圈时间轴与八圆圈、手动装配的四个坑、拆件质检 / IK 约束组件、功能管理 / 侧栏菜单的文本与样式契约）
 node scripts/verify-feedback.mjs   # 浏览器半区渲染（203 项：真加载 lib/client.js，断言遮罩真的出现 / 空闲时真的不出现 / 转圈模式两种生成方式与八圆圈都在 / **「选择本地视频」入口真的在（label + 隐藏 file input，只收 video/*）与每一处「保存」链接（八方向图 / 条带 / 成片 / 预览带 / 整包出口），且没有产物时不渲染空链接** / 深链接点击真的切面板 / 隐藏模块后页签与菜单真的消失、设置页勾选真的写回宿主 / **生图后端：ark 与自定义两组同屏、协议下拉、ComfyUI 工作流文本框只在选中 ComfyUI 时出现、改工作流不立刻发请求** / 语义校验失败没有误报成功）

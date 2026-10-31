@@ -367,12 +367,12 @@ Windows 注册表里的同名变量 → WinGet / Scoop / Chocolatey 与 `C:\ffmp
 
 | 项 | 说明 |
 |---|---|
-| 生图后端 | 选**火山方舟 Seedream**（默认）或**自定义生图模型**；换后端只改这一处，所有生图模块都跟着走 |
-| 火山方舟 API Key | 「测试连接」会真实生成一张 1K 小图（少量费用），同时验证 Key 与模型 |
-| 生图模型 | 默认 `doubao-seedream-5-0-flash-260915`，可切 5.0 Pro / Lite / 4.5 |
-| 自定义生图协议 | `OpenAI API` / `ComfyUI API` / `Stable Diffusion WebUI API` 三选一，填主机根地址即可 |
-| 自定义生图参数 | 模型名、输出尺寸（宽x高）、负面提示词、采样步数 / CFG / 采样器、图生图重绘强度、种子、超时 |
-| ComfyUI 工作流 | 整段粘贴「导出（API）」的 JSON；支持 `{{prompt}}` `{{width}}` `{{seed}}` `{{image}}` 等占位符，不写占位符就原样跑 |
+| 生图后端 | **ComfyUI**（默认，本机 / 自建）或 **ToAPIs**；换后端只改这一处，所有生图模块都跟着走 |
+| ComfyUI 地址 | 填**主机根**（例如 `http://127.0.0.1:8188`），具体端点由插件拼；本地服务通常不需要 Key |
+| 工作流 | **可以保存多份**，在图片生成任务面板上直接切换。整段粘贴「导出（API）」的 JSON；支持 `{{prompt}}` `{{width}}` `{{seed}}` `{{image}}` 等占位符，不写占位符就原样跑 |
+| 工作流参数 | 任务面板上**按工作流自动列出可设置的参数**（种子 / 步数 / CFG / 采样器 / 宽高 / 模型…），类型与取值范围从 ComfyUI 的节点定义现场读 |
+| ComfyUI 参数 | 输出尺寸（宽x高，或 `1K`/`2K`/`4K`）、负面提示词、采样步数 / CFG / 采样器、种子、超时 |
+| ToAPIs | 图片与视频共用 Base URL / Key / 超时；每次生成会计费 |
 | MiniMax API Key | 「测试连接」免费，能区分 Key 无效与其它错误 |
 | 视频模型 | 默认 `MiniMax-H3`（v2 协议）；Hailuo / I2V 走 v1；优云智算版 H3 显式选择 |
 | Base URL | 主机根，不含 `/v1` `/v2`。国内 `api.minimax.cn`，国际 `api.minimaxi.com` |
@@ -385,21 +385,36 @@ Windows 注册表里的同名变量 → WinGet / Scoop / Chocolatey 与 `C:\ffmp
 | 功能管理 | 逐个开关八个模块：关掉的模块界面上不再出现，**对话里的 AI 也调不到**（见下） |
 
 Key 只写入本机 `<DSH_HOME>/game-material-master/config.json`，界面回显始终脱敏。
-**生图后端与模型是插件级设置，所有需要生图的模块共用**，切换后任务自动对齐新档位。
-图生视频始终只走 MiniMax，不受生图后端影响。
+**生图后端与工作流是插件级设置，所有需要生图的模块共用**，切换后任务自动对齐新档位。
+图生视频默认走 MiniMax，也可以在「生视频」页签里改走 ToAPIs 或本机 ComfyUI。
 
-### 自定义生图后端
+### ComfyUI 生图后端
 
-除了火山方舟，插件也支持把你的**自己的生图服务**接进来（设置 → 游戏素材大师 → 生图后端）：
+生图只支持 **ComfyUI**（本机或自建）与 **ToAPIs** 两家；火山方舟、OpenAI 兼容、
+Stable Diffusion WebUI 三种协议已经**移除**（老配置会自动归一到 ComfyUI，不会启动失败）。
 
-| 协议 | 生图 | 带参考图 | 说明 |
-|---|---|---|---|
-| OpenAI API | `POST {base}/images/generations` | `POST {base}/images/edits`（端点不存在时退回 generations 的 `image` 字段） | 兼容 OpenAI 官方与各家兼容网关；`b64_json` / `url` 两种返回都认 |
-| ComfyUI API | `POST {base}/prompt` → 轮询 `/history` → `GET /view` | 先 `POST {base}/upload/image`，把文件名写进工作流 | 需要**API 格式**的工作流 JSON；`{{image}}` 占位符没写时自动改 `LoadImage` 节点 |
-| Stable Diffusion WebUI API | `POST {base}/sdapi/v1/txt2img` | `POST {base}/sdapi/v1/img2img`（`init_images` + 重绘强度） | 需要 WebUI 以 `--api` 启动；API Key 填 `user:pass` 走 HTTP Basic |
+ComfyUI 的链路是 `POST {base}/prompt` → 轮询 `/history` → `GET /view`；
+带参考图时先 `POST {base}/upload/image`，把文件名写进工作流
+（写了 `{{image}}` 就用占位符，没写就自动改 `LoadImage` 节点）。
 
-本地服务通常不需要 API Key；地址填**主机根**（例如 `http://127.0.0.1:8188`），具体端点由插件按协议拼。
-配好点「测试连接」即可真跑一张测试图确认链路通。
+#### 多工作流 + 参数面板
+
+设置页里可以保存**多份**工作流（改名 / 另存 / 删除），图片生成任务面板上有下拉框
+**直接切换**用哪一份 —— 不用为了换一种接法跑回设置页重新粘贴。
+
+每份工作流的**可设置参数会自动列在任务面板上**：类型（数字 / 文本 / 开关 / 下拉）、
+取值范围、枚举候选值全部**从 ComfyUI 的 `/object_info` 现场读**，所以换一份工作流、
+参数控件就跟着变。手写参数清单一定会和工作流脱节，而脱节的表现是「调了没反应」、
+不报任何错。
+
+两处容易踩的坑（都已兜住）：
+
+- **参数类型按节点定义判定**，不按工作流里的当前值 —— 那些槽位往往还是
+  `"{{seed}}"` 这样的字符串占位符，按值猜会把数字写成字符串，ComfyUI 的 int 输入直接报 type 错误。
+- **ComfyUI 没启动时**参数面板退化成「按值推断类型」，表单照常能编辑；
+  生图本身会给出更有用的错误（连不上 / 工作流无效）。
+
+配好点「测试连接」即可真跑一张测试图确认链路通（本地零计费）。
 
 ### 本地 ComfyUI（图生视频）
 
