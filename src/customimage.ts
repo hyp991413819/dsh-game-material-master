@@ -55,6 +55,13 @@ export interface ComfyImageResult {
   remoteUrl?: string;
   /** 远端返回的元信息，便于排错。 */
   usage?: unknown;
+  /**
+   * 「某样东西没生效」的告警（例如工作流里没有 `{{prompt}}`、也找不到接在采样器上的文本节点）。
+   *
+   * 这些情况**不会**让生图失败 —— 图照样出得来，只是用的是工作流里写死的值。
+   * 正因为不失败，才必须让调用方写进任务日志，否则用户完全看不出来。
+   */
+  warnings?: string[];
 }
 
 export class CustomImageError extends Error {
@@ -275,6 +282,70 @@ function patchLoadImage(node: unknown, name: string): boolean {
 }
 
 /**
+ * 没写 `{{prompt}}` 时的兜底：顺着采样器的 **positive 连线**找到文本编码节点，把提示词写进去。
+ *
+ * 为什么要有这条：用户从 ComfyUI 导出的工作流里，提示词往往是**写死的字符串**
+ * （他在界面里试跑时填的那句），插件只替换占位符、不碰写死的值 ——
+ * 于是任务面板上填的提示词**完全不生效**，而且不报任何错，只是每次出的都是同一张图。
+ * 这跟「改了尺寸也不生效」是同一类坑，`patchLatentSize` 已经兜了尺寸，提示词也该兜。
+ *
+ * 怎么找目标：**不能**扫「所有字符串输入」——模型文件名、LoRA 名也是长字符串，
+ * 改错了会把工作流弄坏且报错信息离现场很远。正确做法是顺着拓扑找：
+ *   `KSampler.positive` → `["459:452", 0]` → 那个节点的文本输入。
+ * 找不到采样器（或它没接 positive）时返回 false，让调用方报一条**能看懂**的提示。
+ *
+ * `negative` 只在用户确实填了负面提示词时才写，且要求它与 positive **不是同一个节点**
+ * （Qwen 系工作流常把正负向接在同一个文本编码节点的两个输出槽上）。
+ */
+function patchPromptByTopology(workflow: Record<string, unknown>, prompt: string, negativePrompt: string): { positive: boolean; negative: boolean } {
+  const nodes = workflow as Record<string, { class_type?: unknown; inputs?: Record<string, unknown> } | undefined>;
+  /** 输入名里带这些词的才是提示词，别把 ckpt_name / lora_name 当成文本改掉。 */
+  const PROMPT_KEYS = ["text", "prompt", "positive", "positive_prompt", "text_g"];
+  const isPromptKey = (key: string): boolean => {
+    const lower = key.toLowerCase();
+    return PROMPT_KEYS.includes(lower) || lower.endsWith("_prompt") || lower === "text";
+  };
+
+  /** 在某个节点里写文本；返回是否写成功。 */
+  const writeInto = (nodeId: string, text: string): boolean => {
+    const node = nodes[nodeId];
+    if (node === undefined || node.inputs === null || typeof node.inputs !== "object") return false;
+    for (const key of Object.keys(node.inputs)) {
+      if (!isPromptKey(key)) continue;
+      const current = node.inputs[key];
+      // 只改字符串（连线是数组，跳过）；空串也允许写 —— 那是「用户没填负面提示词」。
+      if (typeof current !== "string") continue;
+      node.inputs[key] = text;
+      return true;
+    }
+    return false;
+  };
+
+  /** 从采样器读一条连线：`["459:452", 0]` → 节点 id。 */
+  const linkedNode = (samplerId: string, slot: "positive" | "negative"): string | undefined => {
+    const link = nodes[samplerId]?.inputs?.[slot];
+    if (!Array.isArray(link) || link.length !== 2 || typeof link[0] !== "string") return undefined;
+    return link[0];
+  };
+
+  // 找采样器：class_type 里带 sampler / guider 的都认（KSampler / KSamplerAdvanced / SamplerCustom…）。
+  const samplerIds = Object.keys(nodes).filter((id) => /sampler|guider/i.test(String(nodes[id]?.class_type ?? "")));
+  for (const samplerId of samplerIds) {
+    const positiveId = linkedNode(samplerId, "positive");
+    if (positiveId === undefined) continue;
+    if (!writeInto(positiveId, prompt)) continue;
+    let negative = false;
+    if (negativePrompt.trim() !== "") {
+      const negativeId = linkedNode(samplerId, "negative");
+      // 正负向接在同一个节点上时，**只写正向**：再写一次会把它覆盖成负面提示词。
+      if (negativeId !== undefined && negativeId !== positiveId) negative = writeInto(negativeId, negativePrompt);
+    }
+    return { positive: true, negative };
+  }
+  return { positive: false, negative: false };
+}
+
+/**
  * 没写 `{{width}}` / `{{height}}` 时的兜底：直接改空 latent 节点的宽高。
  *
  * 这是「改了尺寸也不生效」的常见原因：用户从 ComfyUI 导出的 API 工作流里，
@@ -357,6 +428,8 @@ async function generateComfyUi(request: ComfyImageRequest, context: SignalContex
   const auth = authHeaders(request.apiKey);
   const base = request.baseUrl;
   const seed = request.seed < 0 ? Math.floor(Math.random() * 2147483647) : request.seed;
+  /** 「某样东西没生效」的告警，随结果回给调用方写进任务日志（不静默）。 */
+  const warnings: string[] = [];
 
   // 参考图先传上去，拿到文件名再替换进工作流。
   const imageNames: string[] = [];
@@ -404,6 +477,26 @@ async function generateComfyUi(request: ComfyImageRequest, context: SignalContex
           return { key, nodeId: key.slice(0, dot), nodeType: "", nodeTitle: "", input: key.slice(dot + 1), label: "", kind, value: "" } as never;
         });
     workflow = applyWorkflowParams(workflow as never, request.params, declared) as unknown as Record<string, unknown>;
+  }
+  /**
+   * 工作流里没写 `{{prompt}}` 时，顺着采样器的 positive 连线把提示词写进文本编码节点。
+   *
+   * 放在**参数面板之后**：参数面板里显式改过提示词的人，那个值应该赢；
+   * 这里只补「谁都没写」的那种情况（用户从 ComfyUI 导出的工作流，提示词是写死的字符串）。
+   *
+   * ⚠️ 这条以前是缺的，表现是「任务面板上填的提示词完全不生效、每次出同一张图、不报任何错」。
+   */
+  if (!used.has("prompt")) {
+    const patched = patchPromptByTopology(workflow, request.prompt, request.negativePrompt);
+    if (!patched.positive) {
+      /**
+       * 连采样器的 positive 都找不到，说明这份工作流的结构插件不认识。
+       * 这时候**不能静默**：用户会以为提示词生效了，实际每次都是同一张图。
+       * 但也不该直接拒绝 —— 有些工作流（固定文案的海报模板）本来就不吃外部提示词。
+       * 所以只写一条可见的告警，让调用方把它带进任务日志。
+       */
+      warnings.push("工作流里没有 {{prompt}} 占位符，也没找到接在采样器 positive 上的文本节点：本次提示词没有生效（出图会是工作流里写死的那句）。在 ComfyUI 里把提示词改成 {{prompt}} 再导出即可。");
+    }
   }
 
   const clientId = `gmm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -462,7 +555,14 @@ async function generateComfyUi(request: ComfyImageRequest, context: SignalContex
   const view = await fetchOrThrow(joinUrl(base, `/view?${query.toString()}`), { method: "GET", headers: auth }, context);
   await ensureOk(view, context, "下载生成结果");
   const bytes = Buffer.from(await view.arrayBuffer());
-  return { bytes, ext: sniffExt(bytes), remoteUrl: joinUrl(base, `/view?${query.toString()}`), usage: { seed, promptId, filename: first.filename } };
+  return {
+    bytes,
+    ext: sniffExt(bytes),
+    remoteUrl: joinUrl(base, `/view?${query.toString()}`),
+    usage: { seed, promptId, filename: first.filename },
+    // 空数组 = 一切正常；非空时调用方必须写进任务日志（「提示词没生效」这种必须让人看见）。
+    warnings
+  };
 }
 
 function sleep(ms: number, context: SignalContext): Promise<void> {

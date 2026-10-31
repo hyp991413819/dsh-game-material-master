@@ -263,6 +263,81 @@ check("不改动入参（纯函数）", parsedWorkflow["3"].inputs.seed === "{{s
 const naive = applyWorkflowParams(parsedWorkflow, { "3.seed": "999" });
 check("没有声明时退回按当前值（这条记录了为什么必须传 declared）", naive["3"].inputs.seed === "999");
 
+// ── 4b. 没写 {{prompt}} 时的兜底（顺拓扑找文本节点）────────────────────
+section("4b) 提示词兜底");
+{
+  /**
+   * 真实场景：用户从 ComfyUI 导出的工作流里，提示词是**写死的字符串**
+   * （他试跑时填的那句），一个占位符都没有。以前插件只替换占位符、不碰写死的值，
+   * 于是任务面板上填的提示词**完全不生效**、每次出同一张图、不报任何错。
+   */
+  const hardcoded = JSON.stringify({
+    "13": { class_type: "ResolutionSelector", inputs: { aspect_ratio: "16:9", megapixels: 1 } },
+    "452": { class_type: "TextEncodeQwenImage21", inputs: { prompt: "一棵孤独的树", negative_prompt: "", resolution: 1024, clip: ["453", 0] } },
+    "453": { class_type: "CLIPLoader", inputs: { clip_name: "qwen3vl.safetensors", type: "qwen_image" } },
+    "456": { class_type: "EmptyLatentImage", inputs: { width: ["13", 0], height: ["13", 1], batch_size: 1 } },
+    "458": { class_type: "KSampler", inputs: { seed: 1, steps: 8, cfg: 1, sampler_name: "euler", denoise: 1, model: ["474", 0], positive: ["452", 0], negative: ["452", 1], latent_image: ["456", 0] } },
+    "474": { class_type: "UNETLoader", inputs: { unet_name: "qwen.safetensors" } },
+    "461": { class_type: "SaveImage", inputs: { filename_prefix: "x", images: ["458", 0] } }
+  });
+
+  received.length = 0;
+  comfyHistoryCalls = 0;
+  const fallback = await generateComfyImage({
+    baseUrl: ORIGIN, apiKey: "", prompt: "赛璐璐风格的森林小径", images: [], size: "1024x1024",
+    timeoutMs: 30000, negativePrompt: "", steps: 8, cfgScale: 1, sampler: "euler", denoising: 1, seed: 1,
+    workflow: hardcoded
+  });
+  const sent = jsonOf(pathHits("/prompt")[0]).prompt;
+  check(
+    "没有 {{prompt}} 时顺着采样器 positive 把写死的提示词换掉",
+    sent["452"].inputs.prompt === "赛璐璐风格的森林小径",
+    JSON.stringify(sent["452"].inputs.prompt)
+  );
+  check("正负向接在同一节点时不会把负面提示词写进去（否则会覆盖正向）", sent["452"].inputs.negative_prompt === "");
+  check("兜底成功时不产生告警", (fallback.warnings ?? []).length === 0, JSON.stringify(fallback.warnings));
+
+  // 找不到采样器 / 文本节点：**必须告警**，不能静默出图。
+  received.length = 0;
+  comfyHistoryCalls = 0;
+  const orphan = await generateComfyImage({
+    baseUrl: ORIGIN, apiKey: "", prompt: "任意提示词", images: [], size: "1024x1024",
+    timeoutMs: 30000, negativePrompt: "", steps: 8, cfgScale: 1, sampler: "euler", denoising: 1, seed: 1,
+    workflow: JSON.stringify({ "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "x.safetensors" } } })
+  });
+  check(
+    "找不到可写的文本节点时给出告警（不静默）",
+    (orphan.warnings ?? []).some((text) => text.includes("没有生效")),
+    JSON.stringify(orphan.warnings)
+  );
+
+  // 正负向分别接两个节点：两条都写。
+  received.length = 0;
+  comfyHistoryCalls = 0;
+  const split = JSON.stringify({
+    "6": { class_type: "CLIPTextEncode", inputs: { text: "写死的正向", clip: ["4", 1] } },
+    "7": { class_type: "CLIPTextEncode", inputs: { text: "写死的负向", clip: ["4", 1] } },
+    "3": { class_type: "KSampler", inputs: { seed: 1, steps: 8, cfg: 1, sampler_name: "euler", denoise: 1, model: ["4", 0], positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] } },
+    "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "x.safetensors" } },
+    "5": { class_type: "EmptyLatentImage", inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: "x", images: ["3", 0] } }
+  });
+  await generateComfyImage({
+    baseUrl: ORIGIN, apiKey: "", prompt: "正向提示词", images: [], size: "1024x1024",
+    timeoutMs: 30000, negativePrompt: "负向提示词", steps: 8, cfgScale: 1, sampler: "euler", denoising: 1, seed: 1,
+    workflow: split
+  });
+  const splitSent = jsonOf(pathHits("/prompt")[0]).prompt;
+  check("正负向分开接时两条都写", splitSent["6"].inputs.text === "正向提示词" && splitSent["7"].inputs.text === "负向提示词",
+    `${splitSent["6"].inputs.text} / ${splitSent["7"].inputs.text}`);
+
+  // 模型文件名不能被当成提示词改掉。
+  check(
+    "只改提示词类输入，不碰 ckpt_name / unet_name",
+    splitSent["4"].inputs.ckpt_name === "x.safetensors" && sent["474"].inputs.unet_name === "qwen.safetensors"
+  );
+}
+
 // ── 5. 参数优先级：面板 > 占位符 > 工作流默认 ─────────────────────────
 section("5) 参数面板的值要赢过占位符");
 received.length = 0;

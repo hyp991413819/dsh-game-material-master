@@ -44,6 +44,8 @@ export interface ProviderImageResult {
   ext: string;
   remoteUrl?: string;
   usage?: unknown;
+  /** 「某样东西没生效」的告警；调用方应写进任务日志（不静默）。 */
+  warnings?: string[];
 }
 
 export function isCustomProvider(config: Config): boolean {
