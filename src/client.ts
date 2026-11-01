@@ -380,8 +380,11 @@
       "删除任务": "Delete task",
       "正在调用接口…": "Calling the API…",
       "请选择或新建一个图片任务": "Select or create an image task",
-      "① 提示词": "① Prompt",
-      "统一附加提示词会接在主提示词后面，用来写跨批次的共同要求。": "The shared suffix prompt is appended after the main prompt, for requirements that apply across batches.",
+      "① 生图后端": "① Image backend",
+      "ComfyUI 只走工作流 API：提示词与参考图都写在工作流里，这里不填。ToAPIs 用下面填的提示词出图。": "ComfyUI only runs your workflow API: the prompt and reference images live in the workflow, so nothing is filled in here. ToAPIs uses the prompt below.",
+      "ComfyUI 只走工作流 API：提示词与参考图都在工作流里，这里不填。": "ComfyUI only runs the workflow API: the prompt and reference images live in the workflow, so nothing is entered here.",
+      "ToAPIs 用这里填的提示词出图。": "ToAPIs generates from the prompt entered here.",
+      "提示词与参考图都在工作流里；按当前生图后端的账号价格计费": "The prompt and reference images live in the workflow; billing follows the current backend's account pricing.",
       "描述你要生成的图片…": "Describe the image you want to generate…",
       "统一附加提示词（可留空）": "Shared suffix prompt (optional)",
       "生成张数（1~8）": "Images to generate (1~8)",
@@ -389,7 +392,6 @@
       "已开始生成 {n0} 张": "Started generating {n0} images",
       "正在生成 {n0} 张图片…": "Generating {n0} images…",
       "生成 {n0} 张": "Generate {n0}",
-      "② 参考图（可留空）": "② Reference images (optional)",
       "最多 10 张。有参考图时走图生图；引用多张时可在提示词里写「图一」「图二」。": "Up to 10. With reference images it runs image-to-image; to cite several, write \"image 1\" and \"image 2\" in the prompt.",
       "把参考图拖到这里": "Drag reference images here",
       "已移除参考图": "Reference image removed",
@@ -2054,7 +2056,9 @@
       "ComfyUI 连接正常": "ComfyUI is reachable",
       "只读检查：ComfyUI 是否在线 + 这几个权重在不在，免费、不占显卡。": "Read-only check: is ComfyUI reachable and are these weights present? Free, no GPU time.",
       "一句话描述 → 音效 / 环境音 / 角色配音（火山引擎 Seed-Audio）": "One prompt → sound effects / ambience / character voices (Volcengine Seed-Audio)",
-      "火山方舟 Seedream 生图 · MiniMax 图生视频 · 谱乐 AI 音乐 · 火山引擎音效 · 本地处理": "Volcengine Ark Seedream image gen · MiniMax image-to-video · Puyue AI music · Volcengine sound effects · local processing",
+      "本机 ComfyUI 生图 · MiniMax 图生视频 · 谱乐 AI 音乐 · 火山引擎音效 · 本地处理": "Local ComfyUI image gen · MiniMax image-to-video · Puyue AI music · Volcengine sound effects · local processing",
+      "功能": "Features",
+      "已隐藏 {n0} 个": "{n0} hidden",
       "提示词与参数已保存": "Prompt and settings saved",
       "先写点内容：要什么声音。": "Write something first: what should it sound like?",
       "已提交生成：每次生成都会真实计费，请等它跑完。": "Generation submitted: every run is billed; wait for it to finish.",
@@ -3729,7 +3733,53 @@
     // 实测：模块五「地图地块生成」的五个阶段加起来 810px > 面板 686px，底部的地块卡片
     // 就被切了；而前四个模块恰好都在 686 以内，所以这个坑一直没暴露出来。
     const CSS = `
-.SPR_root{display:flex;flex-direction:column;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+/*
+ * 工作台外壳：顶栏（标题 + 当前模块的操作）→ 下面一行「左侧功能栏 | 模块正文」。
+ *
+ * ⚠️ 这里必须是 overflow:hidden：功能栏要能独立滚动，正文的滚动交给各模块自己
+ * （SPR_body > SPR_main、SPR_rigPanel、SPR_moduleBody[data-module]）。
+ * 根节点再挂一层滚动的话，功能栏会跟着正文一起被滚走 —— 模块九那种长页面里
+ * 表现就是「滚到底部想换个功能，左边的图标全不见了」。
+ */
+.SPR_root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.SPR_shell{display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
+/*
+ * 左侧功能栏：一列**方形图标按钮**，列表本身可滚动。
+ *
+ * 为什么是图标而不是原来的文字页签：九个模块的「标题 + 一句话介绍」横排在顶上要占
+ * 两三行，正文被压到很矮；改成竖排图标后，正文能拿满宽度，介绍文字改成**悬浮才出现**
+ * （见 .SPR_modRailTip）。代价是图标必须能自解释，所以每个模块都配了各自的图形。
+ *
+ * ⚠️ 类名刻意用 SPR_modRail* 而不是 SPR_rail*：后者已经是**侧栏入口**那一套
+ * （SPR_railGlyph / SPR_railMenu / SPR_railMenuItem），两套混用会让样式互相打架，
+ * 而且自检脚本按类名定位元素时会串。
+ */
+.SPR_modRail{width:76px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 6px;overflow-y:auto;overflow-x:hidden;border-right:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);scrollbar-width:thin}
+.SPR_modRail::-webkit-scrollbar{width:6px}
+.SPR_modRail::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:3px}
+.SPR_modRailBtn{position:relative;flex:none;width:52px;height:52px;display:flex;align-items:center;justify-content:center;padding:0;font:inherit;cursor:pointer;border-radius:12px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);transition:background .12s,color .12s,border-color .12s}
+.SPR_modRailBtn:hover{background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
+.SPR_modRailBtn[data-active=true]{border-color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 35%, transparent)}
+.SPR_modRailBtn[data-active=true]::before{content:"";position:absolute;left:-7px;top:50%;width:3px;height:22px;margin-top:-11px;border-radius:0 2px 2px 0;background:var(--dsw-alias-state-business-primary)}
+/* 实验性角标在方形按钮上只留一个小圆点：52px 里塞不下「实验性」三个字。 */
+.SPR_modRailDot{position:absolute;right:5px;top:5px;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-warning-primary,#d9930d);box-shadow:0 0 0 2px var(--dsw-alias-bg-layer-3)}
+.SPR_modRailNote{margin-top:auto;padding-top:8px;font-size:10px;line-height:13px;text-align:center;color:var(--dsw-alias-label-tertiary);cursor:default}
+/*
+ * 悬浮说明。position:fixed + pointer-events:none：
+ * 功能栏自己是滚动容器，absolute 会被裁掉（与侧栏菜单、地图工具标签同一个坑）；
+ * 能接收指针的话，鼠标一移过去就会盖住按钮、触发 mouseleave，说明闪一下就没了。
+ *
+ * ⚠️ 底色用 bg-layer-3 而不是 bg-layer-1：layer-1 在本体里是**半透明**的底衬，
+ * 说明框压正文上时下面的字会透出来、两行文字叠在一起（真机一眼可见）。
+ * 卡片（SPR_card）用的就是 layer-3，那是实色的。再补一层 backdrop-filter 兜住
+ * 主题里 layer-3 也被改成半透明的情况。
+ */
+.SPR_modRailTip{position:fixed;z-index:80;transform:translateY(-50%);max-width:260px;pointer-events:none;padding:8px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);backdrop-filter:blur(10px);box-shadow:0 10px 26px rgba(0,0,0,.28);display:flex;flex-direction:column;gap:2px}
+.SPR_modRailTipTitle{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);white-space:nowrap}
+.SPR_modRailTipHint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.SPR_shellMain{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+/* 各模块的正文根节点直接挂在 shellMain 下面：让它们吃满剩余高度，滚动各自负责。 */
+.SPR_shellMain>*{flex:1;min-height:0;min-width:0}
 /*
  * 六号模块（地图编辑器）自己的正文容器。
  *
@@ -3742,8 +3792,19 @@
 .SPR_headSub{color:var(--dsw-alias-label-tertiary);font-size:12px}
 .SPR_spacer{flex:1}
 .SPR_body{display:flex;flex:1;min-height:0}
-.SPR_side{width:220px;flex:none;border-right:1px solid var(--dsw-alias-border-l2);padding:12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+/*
+ * 任务列表在**右边**。
+ *
+ * DOM 里它仍排在正文前面（SPR_side → SPR_main，九个模块都这么写），靠 order
+ * 换到右侧，而不是去改每个模块的子节点顺序：顺序一改，.SPR_main 的 flex:1
+ * 就落在中间那个元素上，任何一处漏改都会变成「正文挤在中间、右边空一大块」。
+ * 分隔线同时从 border-right 换成 border-left。
+ */
+.SPR_side{order:2;width:220px;flex:none;border-left:1px solid var(--dsw-alias-border-l2);border-right:0;padding:12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
 .SPR_sideTitle{font-size:12px;color:var(--dsw-alias-label-tertiary);padding:0 2px}
+/* 右栏的小标题 + 操作按钮一行；任务列表本身再占一列（模块九用）。 */
+.SPR_sideHead{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:none}
+.SPR_projList{display:flex;flex-direction:column;gap:4px;min-height:0}
 .SPR_projItem{display:flex;flex-direction:column;gap:2px;text-align:left;width:100%;font:inherit;cursor:pointer;background:transparent;border:1px solid transparent;border-radius:8px;padding:7px 9px;color:var(--dsw-alias-label-primary)}
 .SPR_projItem:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .SPR_projItem[data-active=true]{background:var(--dsw-alias-bg-layer-3);border-color:var(--dsw-alias-border-l1)}
@@ -3763,7 +3824,7 @@
 .SPR_mapEdMenu .SPR_projNameRow,.SPR_isoMenu .SPR_projNameRow{width:100%}
 .SPR_projName{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .SPR_projMeta{font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
-.SPR_main{flex:1;min-width:0;overflow:auto;padding:16px 18px 40px}
+.SPR_main{order:1;flex:1;min-width:0;overflow:auto;padding:16px 18px 40px}
 .SPR_steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
 .SPR_step{font:inherit;font-size:12px;cursor:pointer;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:5px 12px;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;gap:6px}
 .SPR_step[data-active=true]{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 28%, transparent)}
@@ -4189,11 +4250,17 @@
 .SPR_axisRulerMid{text-align:center}
 .SPR_pickPanel{grid-column:1 / -1;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:12px;background:var(--dsw-alias-bg-layer-1)}
 .SPR_pickHead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+/*
+ * 工作台的功能导航已经挪到左侧图标栏（SPR_modRail*）。这里只剩 SPR_modules
+ * 一个类：它现在被**模块④「骨骼动画生成」内部的阶段页签**复用（那是模块内的
+ * 步骤切换，不是功能导航，仍然横排文字）。
+ */
 .SPR_modules{display:flex;gap:8px;padding:10px 18px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none;flex-wrap:wrap;align-items:center}
-.SPR_modulesHiddenNote{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-left:auto}
 .SPR_module{font:inherit;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:1px;padding:6px 12px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary)}
 .SPR_module:hover{background:var(--dsw-alias-interactive-bg-hover-solid)}
 .SPR_module[data-active=true]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);box-shadow:0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 30%, transparent)}
+/* 顶栏右侧那句「已隐藏 N 个功能…」：功能栏挪到左边之后，这句仍在顶栏。 */
+.SPR_modulesHiddenNote{font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42vw}
 .SPR_moduleTitle{font-size:13px;font-weight:600}
 .SPR_moduleHint{font-size:11px;color:var(--dsw-alias-label-tertiary)}
 .SPR_thumbSm{width:44px;height:44px;object-fit:contain;border-radius:6px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);flex:none}
@@ -5086,6 +5153,98 @@
       );
     }
 
+    /**
+     * 左侧功能栏的模块图标（24×24 线框，`currentColor` 上色）。
+     *
+     * 图标按钮没有文字，图形就是唯一线索，所以每个模块都画了**能对上它产物**的图形：
+     * 八方向是一张脸 + 四支箭头、地图是格子、音乐是音符、音效是声波、UI 是窗口里的
+     * 控件框……复用同一个通用图标会让人只能靠数位置来选功能。
+     *
+     * 只支持 `stroke`/`fill` 两种画法，保持 1.5 的线宽与圆角端点，和 `StudioGlyphIcon`
+     * 的观感一致。
+     */
+    function ModuleGlyph(props) {
+      const key = props?.module;
+      const size = props?.size ?? 22;
+      const S = { stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", fill: "none" };
+      const F = { fill: "currentColor", stroke: "none" };
+      const shapes = [];
+      if (key === "sprite") {
+        // 八方向：中间一个圆（角色），四周四个小三角指向上下左右。
+        shapes.push(h("circle", { key: "c", cx: 12, cy: 12, r: 3.6, ...S }));
+        shapes.push(h("path", { key: "u", d: "M12 3.2 L9.9 6.4 H14.1 Z", ...F }));
+        shapes.push(h("path", { key: "d", d: "M12 20.8 L9.9 17.6 H14.1 Z", ...F }));
+        shapes.push(h("path", { key: "l", d: "M3.2 12 L6.4 9.9 V14.1 Z", ...F }));
+        shapes.push(h("path", { key: "r", d: "M20.8 12 L17.6 9.9 V14.1 Z", ...F }));
+      } else if (key === "image") {
+        // 图片：山与太阳。
+        shapes.push(h("rect", { key: "r", x: 3.4, y: 4.8, width: 17.2, height: 14.4, rx: 2.6, ...S }));
+        shapes.push(h("circle", { key: "s", cx: 8.6, cy: 9.6, r: 1.7, ...F }));
+        shapes.push(h("path", { key: "m", d: "M4.6 16.6 L9.8 11.8 L13.4 15.2 L16 12.8 L19.4 16.2", ...S }));
+      } else if (key === "sequence") {
+        // 序列帧：三格胶片。
+        shapes.push(h("rect", { key: "a", x: 3.4, y: 6.4, width: 5.4, height: 11.2, rx: 1.4, ...S }));
+        shapes.push(h("rect", { key: "b", x: 9.6, y: 4.4, width: 5.4, height: 15.2, rx: 1.4, ...S }));
+        shapes.push(h("rect", { key: "c", x: 15.8, y: 6.4, width: 5.4, height: 11.2, rx: 1.4, ...S }));
+      } else if (key === "rig") {
+        // 骨骼：三个关节 + 连线。
+        shapes.push(h("path", { key: "l", d: "M8.2 5.6 L12 12 L8.2 18.4 M12 12 L16.4 8.2 M12 12 L16.4 15.8", ...S }));
+        shapes.push(h("circle", { key: "j1", cx: 7, cy: 4.4, r: 1.9, ...F }));
+        shapes.push(h("circle", { key: "j2", cx: 17.4, cy: 7, r: 1.9, ...F }));
+        shapes.push(h("circle", { key: "j3", cx: 17.4, cy: 17, r: 1.9, ...F }));
+        shapes.push(h("circle", { key: "j4", cx: 7, cy: 19.6, r: 1.9, ...F }));
+      } else if (key === "iso") {
+        // 45° 地图：菱形地格。
+        shapes.push(h("path", { key: "a", d: "M12 3.6 L20.4 9.2 L12 14.8 L3.6 9.2 Z", ...S }));
+        shapes.push(h("path", { key: "b", d: "M3.6 14.8 L12 20.4 L20.4 14.8", ...S }));
+      } else if (key === "map") {
+        // 俯视地图：2×2 方格。
+        shapes.push(h("rect", { key: "a", x: 3.6, y: 3.6, width: 7.6, height: 7.6, rx: 1.4, ...S }));
+        shapes.push(h("rect", { key: "b", x: 12.8, y: 3.6, width: 7.6, height: 7.6, rx: 1.4, ...S }));
+        shapes.push(h("rect", { key: "c", x: 3.6, y: 12.8, width: 7.6, height: 7.6, rx: 1.4, ...S }));
+        shapes.push(h("rect", { key: "d", x: 12.8, y: 12.8, width: 7.6, height: 7.6, rx: 1.4, ...S }));
+      } else if (key === "music") {
+        // 音乐：两个音符。
+        shapes.push(h("path", { key: "s", d: "M10.2 17.2 V6.4 L18.4 4.6 V15.4", ...S }));
+        shapes.push(h("circle", { key: "n1", cx: 7.8, cy: 17.4, r: 2.5, ...F }));
+        shapes.push(h("circle", { key: "n2", cx: 16, cy: 15.6, r: 2.5, ...F }));
+      } else if (key === "sfx") {
+        // 音效：喇叭 + 声波。
+        shapes.push(h("path", { key: "h", d: "M4.2 9.6 H7.6 L12.4 5.6 V18.4 L7.6 14.4 H4.2 Z", ...S }));
+        shapes.push(h("path", { key: "w1", d: "M15.4 9.2 A4.2 4.2 0 0 1 15.4 14.8", ...S }));
+        shapes.push(h("path", { key: "w2", d: "M17.8 6.8 A7.6 7.6 0 0 1 17.8 17.2", ...S }));
+      } else if (key === "ui") {
+        // 游戏 UI：窗口里两个控件框。
+        shapes.push(h("rect", { key: "w", x: 3.4, y: 4.4, width: 17.2, height: 15.2, rx: 2.4, ...S }));
+        shapes.push(h("path", { key: "b", d: "M3.4 8.6 H20.6", ...S }));
+        shapes.push(h("rect", { key: "c1", x: 6.2, y: 11.4, width: 6.2, height: 5.2, rx: 1.2, ...S }));
+        shapes.push(h("rect", { key: "c2", x: 14.2, y: 11.4, width: 3.4, height: 2.2, rx: 1, ...F }));
+      } else {
+        shapes.push(h("rect", { key: "r", x: 4, y: 4, width: 16, height: 16, rx: 3, ...S }));
+      }
+      return h("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", "aria-hidden": "true" }, shapes);
+    }
+
+    /**
+     * 左侧功能栏的悬浮说明：算好位置挂到 `position:fixed` 的浮层上。
+     *
+     * 坐标在 hover 时用 `getBoundingClientRect()` 现算，并**夹在视口内**：
+     * 图标栏贴着窗口左边，说明框又宽 260px，不做夹取的话最上面/最下面那个按钮的
+     * 说明会被窗口边缘切掉（和地图工具标签、侧栏菜单是同一类问题）。
+     */
+    function moduleTipPosition(node) {
+      if (node === null || node === undefined || typeof node.getBoundingClientRect !== "function") return null;
+      const rect = node.getBoundingClientRect();
+      const viewHeight = typeof window === "undefined" ? 0 : window.innerHeight || 0;
+      const y = rect.top + rect.height / 2;
+      // 上下各留半个浮层的高度（约 52px）：第一个 / 最后一个按钮的说明不出界。
+      const half = 52;
+      return {
+        x: Math.round(rect.right + 10),
+        y: Math.round(viewHeight > 0 ? Math.max(half, Math.min(y, viewHeight - half)) : y)
+      };
+    }
+
     /** 单个产物的「通过 / 取消通过」。与对话里的 game_material({action:'approve'}) 同一份数据。 */
     function ApproveBtn(props) {
       const { approved, disabled, onToggle, idleText } = props;
@@ -5287,6 +5446,15 @@
       const [sourceBusy, setSourceBusy] = React.useState(false);
       const [dropOver, setDropOver] = React.useState(false);
       const fileInputRef = React.useRef(null);
+      /*
+       * 左侧功能栏的悬浮说明。`{title,hint,experimental,x,y}` 或 null。
+       *
+       * 用 state 而不是 CSS `::after`：说明要跟着按钮的**实测位置**走（图标栏可滚动、
+       * 窗口可缩放），纯 CSS 没法把 260px 宽的框夹在视口里。
+       */
+      const [moduleTip, setModuleTip] = React.useState(null);
+      /** 当前悬浮的按钮：滚动 / 改窗口大小时靠它把说明重新锚回去。 */
+      const moduleTipAnchor = React.useRef(null);
       // 「正在调用接口」的记账表：宿主侧任务状态还没落盘时，遮罩靠它撑住。
       const tasks = usePendingTasks();
       // 深链接意图：会话里点「查看验收」时落到对应模块 / 项目 / 阶段。
@@ -5314,6 +5482,44 @@
       React.useEffect(() => {
         if (activeModule !== null && activeModule !== module) setModule(activeModule);
       }, [activeModule, module]);
+
+      /**
+       * 鼠标停在功能栏按钮上时显示说明；离开时收起。
+       *
+       * 滚动 / 缩放窗口时**把说明重新锚回按钮**，而不是直接收起来：收起看着更省事，
+       * 但鼠标还停在按钮上、`mouseenter` 不会再触发，用户得先把鼠标移开再挪回来。
+       * 依赖只取「有没有说明」这个布尔量 —— 依赖 `moduleTip` 本身的话，每次重新定位
+       * 都会重新挂监听。
+       */
+      const showModuleTip = (entry) => (event) => {
+        const node = event === undefined ? null : event.currentTarget;
+        moduleTipAnchor.current = node;
+        const position = moduleTipPosition(node);
+        if (position === null) return;
+        setModuleTip({ title: entry.title, hint: entry.hint, experimental: entry.experimental === true, x: position.x, y: position.y });
+      };
+      const hideModuleTip = () => {
+        moduleTipAnchor.current = null;
+        setModuleTip((current) => (current === null ? current : null));
+      };
+      React.useEffect(() => {
+        if (moduleTip === null || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+        const reanchor = () => {
+          const node = moduleTipAnchor.current;
+          const position = moduleTipPosition(node);
+          if (position === null || node.isConnected === false) {
+            hideModuleTip();
+            return;
+          }
+          setModuleTip((current) => (current === null ? current : { ...current, x: position.x, y: position.y }));
+        };
+        window.addEventListener("scroll", reanchor, true);
+        window.addEventListener("resize", reanchor);
+        return () => {
+          window.removeEventListener("scroll", reanchor, true);
+          window.removeEventListener("resize", reanchor);
+        };
+      }, [moduleTip === null]);
 
       React.useEffect(() => {
         if (intent === null) return;
@@ -5567,62 +5773,23 @@
       const activeStageIndex = STAGES.findIndex((s) => s.key === stage);
       const activeStage = STAGES[activeStageIndex < 0 ? 0 : activeStageIndex];
 
-      return h(
-        "div",
-        { className: "SPR_root" },
-        h(
-          "div",
-          { className: "SPR_head" },
-          h("h2", null, T("游戏素材大师")),
-          h("span", { className: "SPR_headSub" }, T("火山方舟 Seedream 生图 · MiniMax 图生视频 · 谱乐 AI 音乐 · 火山引擎音效 · 本地处理")),
-          h("span", { className: "SPR_spacer" }),
-          activeModule === "sprite"
-            ? h(
-                React.Fragment,
-                null,
-                h(Btn, { onClick: () => void refreshProjects(), disabled: loading }, T("刷新列表")),
-                project !== null ? h(Btn, { onClick: renameCurrent }, T("重命名")) : null,
-                project !== null ? h(Btn, { onClick: deleteCurrent, danger: true }, T("删除项目")) : null,
-                project !== null ? h(CopyIdButton, { id: project.id }) : null,
-                h(Btn, { onClick: createProject, primary: true }, T("新建项目"))
-              )
-            : null
-        ),
-        h(
-          "div",
-          { className: "SPR_modules", "data-hidden-count": String(hidden.length) },
-          visibleModules.map((entry) =>
-            h(
-              "button",
-              {
-                key: entry.key,
-                type: "button",
-                className: "SPR_module",
-                "data-module": entry.key,
-                "data-active": activeModule === entry.key ? "true" : "false",
-                onClick: () => setModule(entry.key)
-              },
-              h(
-                "span",
-                { className: "SPR_moduleTitleRow" },
-                h("span", { className: "SPR_moduleTitle" }, entry.title),
-                entry.experimental === true ? h("span", { className: "SPR_expTag" }, T("实验性")) : null
-              ),
-              h("span", { className: "SPR_moduleHint" }, entry.hint)
-            )
-          ),
-          hidden.length > 0
-            ? h("span", { className: "SPR_modulesHiddenNote" }, T("已隐藏 {n0} 个功能（设置 → 游戏素材大师 → 功能管理）", { n0: hidden.length }))
-            : null
-        ),
-        activeModule === null
+      /*
+       * 「已隐藏 N 个功能」的提示放在**顶栏**而不是左侧图标栏里：
+       * 图标栏只有 76px 宽，那句 30 多字的话会被折成七八行、把按钮全挤下去。
+       * 顶栏本来就有横排空间，而且这句话是全局信息，不是某个模块的信息。
+       */
+      const hiddenNote =
+        hidden.length > 0
+          ? h("span", { className: "SPR_modulesHiddenNote", title: T("已隐藏 {n0} 个功能（设置 → 游戏素材大师 → 功能管理）", { n0: hidden.length }) }, T("已隐藏 {n0} 个功能（设置 → 游戏素材大师 → 功能管理）", { n0: hidden.length }))
+          : null;
+
+      const body = activeModule === null
           ? h(
               "div",
               { className: "SPR_body" },
               h("p", { className: "SPR_empty" }, T("所有功能都已被隐藏。请到「设置 → 游戏素材大师 → 功能管理」里打开至少一个。"))
             )
-          : null,
-        activeModule === "sprite"
+          : activeModule === "sprite"
           ? h(
           "div",
           { className: "SPR_body" },
@@ -5855,7 +6022,80 @@
                         ? h(UiModule, { api })
                         : activeModule === "rig"
                           ? h(RigModule, { api })
-                          : null
+                          : null;
+
+      return h(
+        "div",
+        { className: "SPR_root" },
+        h(
+          "div",
+          { className: "SPR_head" },
+          h("h2", null, T("游戏素材大师")),
+          h("span", { className: "SPR_headSub" }, T("本机 ComfyUI 生图 · MiniMax 图生视频 · 谱乐 AI 音乐 · 火山引擎音效 · 本地处理")),
+          h("span", { className: "SPR_spacer" }),
+          hiddenNote,
+          activeModule === "sprite"
+            ? h(
+                React.Fragment,
+                null,
+                h(Btn, { onClick: () => void refreshProjects(), disabled: loading }, T("刷新列表")),
+                project !== null ? h(Btn, { onClick: renameCurrent }, T("重命名")) : null,
+                project !== null ? h(Btn, { onClick: deleteCurrent, danger: true }, T("删除项目")) : null,
+                project !== null ? h(CopyIdButton, { id: project.id }) : null,
+                h(Btn, { onClick: createProject, primary: true }, T("新建项目"))
+              )
+            : null
+        ),
+        h(
+          "div",
+          { className: "SPR_shell" },
+          h(
+            "nav",
+            { className: "SPR_modRail", "data-hidden-count": String(hidden.length), "aria-label": T("功能") },
+            visibleModules.map((entry) =>
+              h(
+                "button",
+                {
+                  key: entry.key,
+                  type: "button",
+                  className: "SPR_modRailBtn",
+                  "data-module": entry.key,
+                  "data-active": activeModule === entry.key ? "true" : "false",
+                  // 图标按钮没有可见文字，标题与介绍都靠悬浮说明和读屏标签给出来。
+                  title: entry.title,
+                  "aria-label": `${entry.title} · ${entry.hint}`,
+                  "aria-current": activeModule === entry.key ? "page" : undefined,
+                  onMouseEnter: showModuleTip(entry),
+                  onFocus: showModuleTip(entry),
+                  onMouseLeave: hideModuleTip,
+                  onBlur: hideModuleTip,
+                  onClick: () => setModule(entry.key)
+                },
+                h(ModuleGlyph, { module: entry.key }),
+                entry.experimental === true
+                  ? h("span", { className: "SPR_modRailDot", "aria-hidden": "true" })
+                  : null
+              )
+            ),
+            hidden.length > 0
+              ? h("span", { className: "SPR_modRailNote" }, T("已隐藏 {n0} 个", { n0: hidden.length }))
+              : null
+          ),
+          h("div", { className: "SPR_shellMain" }, body)
+        ),
+        moduleTip === null
+          ? null
+          : h(
+              "div",
+              { className: "SPR_modRailTip", style: { left: moduleTip.x, top: moduleTip.y }, role: "tooltip" },
+              h(
+                "span",
+                { className: "SPR_modRailTipTitle" },
+                moduleTip.title,
+                moduleTip.experimental === true ? h("span", { className: "SPR_expTag" }, T("实验性")) : null
+              ),
+              h("span", { className: "SPR_modRailTipHint" }, moduleTip.hint)
+            )
       );
     }
 
@@ -14481,16 +14721,20 @@
             }
             if (loading)
                 return h("div", { className: "SPR_empty" }, T("正在载入…"));
-            // ── 左栏：任务列表 ────────────────────────────────────────────────
-            const sidebar = h("aside", { className: "SPR_sidebar" }, h("div", { className: "SPR_sideHead" }, h("span", { className: "SPR_sideTitle" }, T("UI 任务")), h("button", { type: "button", className: "SPR_btn SPR_btnPrimary", onClick: () => setCreateOpen(true) }, T("新建"))), h("div", { className: "SPR_projList" }, jobs.length === 0
+            // ── 右栏：任务列表 ────────────────────────────────────────────────
+            //
+            // 用 `.SPR_side` 而不是自造的 `.SPR_sidebar`：那个类名从来没写过 CSS
+            // 规则（界面塌成「任务列表叠在正文上面」），而 `.SPR_side` 已经是
+            // 其余八个模块共用的右栏口径（宽度、内边距、滚动、分隔线）。
+            const sidebar = h("aside", { className: "SPR_side" }, h("div", { className: "SPR_sideHead" }, h("span", { className: "SPR_sideTitle" }, T("UI 任务")), h("button", { type: "button", className: "SPR_btn SPR_btnPrimary", onClick: () => setCreateOpen(true) }, T("新建"))), h("div", { className: "SPR_projList" }, jobs.length === 0
                 ? h("div", { className: "SPR_empty" }, T("还没有任务。点「新建」开始。"))
                 : jobs.map((entry) => h("button", { key: entry.id, type: "button", className: "SPR_projItem", "data-active": entry.id === jobId ? "true" : "false", onClick: () => void loadJob(entry.id) }, h("span", { className: "SPR_projNameRow" }, h("span", { className: "SPR_projName" }, entry.name), h(CopyIdButton, { id: entry.id, inline: true })), h("span", { className: "SPR_projMeta" }, `${entry.width}×${entry.height} · ${entry.boxes ?? 0} 框 · 出图 ${entry.renders ?? 0}${entry.busy ? " · ⏳" : ""}`)))));
             // ── 新建对话框 ────────────────────────────────────────────────────
             if (createOpen) {
-                return h("div", { className: "SPR_module" }, sidebar, h("section", { className: "SPR_main" }, h("h3", { style: { margin: 0 } }, T("新建 UI 任务")), h("p", { className: "SPR_hint" }, T("先定画布尺寸，再在画布上拖出画框。尺寸必须是 16 的倍数（MOSS 的 latent 网格）。")), h(UiTextField, { label: T("名字（可留空）"), value: draftName, onChange: setDraftName }), h("div", { className: "SPR_fields" }, h(NumField, { label: T("画布宽"), value: draftWidth, min: 256, max: 2048, step: 16, onChange: (v) => setDraftWidth(Math.round(v / 16) * 16) }), h(NumField, { label: T("画布高"), value: draftHeight, min: 256, max: 2048, step: 16, onChange: (v) => setDraftHeight(Math.round(v / 16) * 16) })), h("div", { className: "SPR_actions" }, h(BusyBtn, { busy: creating, onClick: createJob }, T("创建")), h("button", { type: "button", className: "SPR_btn", onClick: () => setCreateOpen(false) }, T("取消")))));
+                return h("div", { className: "SPR_body" }, sidebar, h("section", { className: "SPR_main" }, h("h3", { style: { margin: 0 } }, T("新建 UI 任务")), h("p", { className: "SPR_hint" }, T("先定画布尺寸，再在画布上拖出画框。尺寸必须是 16 的倍数（MOSS 的 latent 网格）。")), h(UiTextField, { label: T("名字（可留空）"), value: draftName, onChange: setDraftName }), h("div", { className: "SPR_fields" }, h(NumField, { label: T("画布宽"), value: draftWidth, min: 256, max: 2048, step: 16, onChange: (v) => setDraftWidth(Math.round(v / 16) * 16) }), h(NumField, { label: T("画布高"), value: draftHeight, min: 256, max: 2048, step: 16, onChange: (v) => setDraftHeight(Math.round(v / 16) * 16) })), h("div", { className: "SPR_actions" }, h(BusyBtn, { busy: creating, onClick: createJob }, T("创建")), h("button", { type: "button", className: "SPR_btn", onClick: () => setCreateOpen(false) }, T("取消")))));
             }
             if (job === null) {
-                return h("div", { className: "SPR_module" }, sidebar, h("section", { className: "SPR_main SPR_empty" }, T("选一个任务，或点「新建」开始画 UI 框架。")));
+                return h("div", { className: "SPR_body" }, sidebar, h("section", { className: "SPR_main SPR_empty" }, T("选一个任务，或点「新建」开始画 UI 框架。")));
             }
             const boxes = job.layout?.boxes ?? [];
             const renders = job.renders ?? [];
@@ -14603,7 +14847,7 @@
             const results = slices.length === 0
                 ? null
                 : h("section", { className: "SPR_uiSlices" }, h("h4", { style: { margin: "0 0 8px" } }, `${T("切图结果")}（${slices.length}）`), h("div", { className: "SPR_uiSliceGrid" }, slices.map((slice) => h("figure", { key: slice.file, className: "SPR_uiSlice" }, h("img", { src: slice.url, alt: slice.label, loading: "lazy" }), h("figcaption", null, `${slice.index}. ${slice.label}${slice.width ? ` · ${slice.width}×${slice.height}` : ""}`)))));
-            return h("div", { className: "SPR_module" }, sidebar, h("section", { className: "SPR_main" }, h("div", { className: "SPR_titleRow" }, h("h3", { style: { margin: 0 } }, job.name), h(CopyIdButton, { id: job.id }), savingLayout ? h("span", { className: "SPR_hint" }, T("保存中…")) : null), notice !== null ? h("div", { className: "SPR_note", "data-kind": notice.kind }, notice.text) : null, job.error ? h("div", { className: "SPR_note", "data-kind": "error" }, job.error) : null, job.busy === true
+            return h("div", { className: "SPR_body" }, sidebar, h("section", { className: "SPR_main" }, h("div", { className: "SPR_titleRow" }, h("h3", { style: { margin: 0 } }, job.name), h(CopyIdButton, { id: job.id }), savingLayout ? h("span", { className: "SPR_hint" }, T("保存中…")) : null), notice !== null ? h("div", { className: "SPR_note", "data-kind": notice.kind }, notice.text) : null, job.error ? h("div", { className: "SPR_note", "data-kind": "error" }, job.error) : null, job.busy === true
                 ? h("div", { className: "SPR_note", "data-kind": "info" }, T("正在本机 ComfyUI 上跑，分钟级，请稍候…"))
                 : null, h("div", { className: "SPR_uiBody" }, canvas, inspector), results));
         }
@@ -16698,34 +16942,19 @@
                   h(
                     "div",
                     { className: "SPR_card" },
-                    h("div", { className: "SPR_cardHead" }, h("h3", null, T("① 提示词"))),
-                    h("p", { className: "SPR_hint" }, T("统一附加提示词会接在主提示词后面，用来写跨批次的共同要求。")),
-                    h("textarea", {
-                      className: "SPR_area",
-                      placeholder: T("描述你要生成的图片…"),
-                      value: promptDraft,
-                      onChange: (event) => setPromptDraft(event.target.value),
-                      onBlur: () => {
-                        if (promptDraft !== (job.prompt ?? "")) void saveJob({ prompt: promptDraft });
-                      }
-                    }),
-                    h("textarea", {
-                      className: "SPR_area",
-                      style: { minHeight: 60 },
-                      placeholder: T("统一附加提示词（可留空）"),
-                      value: suffixDraft,
-                      onChange: (event) => setSuffixDraft(event.target.value),
-                      onBlur: () => {
-                        if (suffixDraft !== (job.suffix ?? "")) void saveJob({ suffix: suffixDraft });
-                      }
-                    }),
+                    h("div", { className: "SPR_cardHead" }, h("h3", null, T("① 生图后端"))),
+                    h("p", { className: "SPR_hint" }, T("ComfyUI 只走工作流 API：提示词与参考图都写在工作流里，这里不填。ToAPIs 用下面填的提示词出图。")),
                     /**
                      * 生图后端页签。
                      *
                      * 两个后端各有**一整套独立参数**（ComfyUI：工作流 + 参数面板；
-                     * ToAPIs：模型 / 质量 / 背景），切页签时互不影响 ——
+                     * ToAPIs：提示词 / 附加提示词 / 参考图 / 模型 / 质量 / 背景），切页签时互不影响 ——
                      * 同一个人经常「这张用本机 ComfyUI、那张用 ToAPIs」，
                      * 共用一组控件的话，改了一边另一边也跟着变。
+                     *
+                     * **提示词与参考图只挂在 ToAPIs 下**：ComfyUI 只调工作流 API，
+                     * 提示词在文本编码节点里、参考图在 LoadImage 里，面板上再摆一份
+                     * 只会让人以为填了有用（填了也不生效、还不报错）。
                      *
                      * 选择是**任务级**的（`settings.backend`）：空串 = 跟随全局，
                      * 这样改一个任务的页签不会把别的任务一起改掉。
@@ -16821,11 +17050,16 @@
                      *
                      * 只在 ComfyUI 页签下显示 —— ToAPIs 那边没有「工作流」这个概念，
                      * 把它摆出来只会让人以为调了有用。
+                     *
+                     * **这一支里没有提示词 / 附加提示词 / 参考图**：ComfyUI 只跑用户自己的工作流，
+                     * 提示词在文本编码节点里、参考图在 LoadImage 里，面板上再摆一份只会让人
+                     * 以为填了有用（填了也不生效、还不报错）。这三项挂在 ToAPIs 页签下。
                      */
                     activeBackend === "comfyui"
                       ? h(
                           React.Fragment,
                           null,
+                          h("p", { className: "SPR_hint", "data-testid": "image-comfy-hint" }, T("ComfyUI 只走工作流 API：提示词与参考图都在工作流里，这里不填。")),
                           h(
                             "label",
                             { className: "SPR_field" },
@@ -16909,18 +17143,76 @@
                                             })
                                           )
                                 )
-                              )
+                              ),
+                          h(
+                            "div",
+                            { className: "SPR_toolbar" },
+                            h(
+                              BusyBtn,
+                              {
+                                primary: true,
+                                busy: tasks.has(K_IMG_JOB),
+                                busyText: T("正在生成 {n0} 张…", { n0: settingsDraft.count ?? 1 }),
+                                // ComfyUI 不吃面板上的提示词，所以**不按「提示词为空」禁用**按钮。
+                                disabled: tasks.has(K_IMG_JOB),
+                                onClick: () =>
+                                  void run(
+                                    async () => {
+                                      await enqueueImageSave({ settings: settingsDraft });
+                                      return api.runImageJob({ jobId: job.id });
+                                    },
+                                    T("已开始生成 {n0} 张", { n0: settingsDraft.count ?? 1 }),
+                                    { key: K_IMG_JOB, label: T("正在生成 {n0} 张图片…", { n0: settingsDraft.count ?? 1 }) }
+                                  )
+                              },
+                              T("生成 {n0} 张", { n0: settingsDraft.count ?? 1 })
+                            ),
+                            h("span", { className: "SPR_refRow" }, T("提示词与参考图都在工作流里；按当前生图后端的账号价格计费"))
+                          )
                         )
                       : null,
 
                     /**
-                     * ToAPIs 专属面板：模型 / 质量 / 背景。
+                     * ToAPIs 专属面板：提示词 / 附加提示词 / 参考图 / 模型 / 质量 / 背景。
                      *
-                     * 这三项在 `config` 里是全局的；任务上留空 = 跟随全局，
+                     * **提示词与参考图只在这里出现**：ComfyUI 那条路只调工作流 API，
+                     * 提示词与参考图由工作流自己决定；ToAPIs 没有工作流，提示词就是唯一输入，
+                     * 所以这两项必须留着，否则这条路出不了图。
+                     *
+                     * 模型 / 质量 / 背景在 `config` 里是全局的；任务上留空 = 跟随全局，
                      * 填了就只影响这个任务（见 `generateImageWithProvider` 的合并逻辑）。
                      */
                     activeBackend === "toapis"
                       ? h(
+                          React.Fragment,
+                          null,
+                          h(
+                            "div",
+                            { className: "SPR_fields", "data-testid": "image-toapis-prompt" },
+                            h("p", { className: "SPR_hint" }, T("ToAPIs 用这里填的提示词出图。")),
+                            h("textarea", {
+                              className: "SPR_area",
+                              "data-testid": "image-prompt",
+                              placeholder: T("描述你要生成的图片…"),
+                              value: promptDraft,
+                              onChange: (event) => setPromptDraft(event.target.value),
+                              onBlur: () => {
+                                if (promptDraft !== (job.prompt ?? "")) void saveJob({ prompt: promptDraft });
+                              }
+                            }),
+                            h("textarea", {
+                              className: "SPR_area",
+                              style: { minHeight: 60 },
+                              "data-testid": "image-prompt-suffix",
+                              placeholder: T("统一附加提示词（可留空）"),
+                              value: suffixDraft,
+                              onChange: (event) => setSuffixDraft(event.target.value),
+                              onBlur: () => {
+                                if (suffixDraft !== (job.suffix ?? "")) void saveJob({ suffix: suffixDraft });
+                              }
+                            })
+                          ),
+                          h(
                           "div",
                           { className: "SPR_fields", "data-testid": "image-toapis-params" },
                           h(
@@ -16972,55 +17264,55 @@
                               h("option", { value: "opaque" }, T("不透明背景"))
                             ),
                             h("span", { className: "SPR_fieldLabel" }, T("只有 GPT Image 系模型支持显式背景"))
-                          )
-                        )
-                      : null,
-                    h(
-                      "div",
-                      { className: "SPR_toolbar" },
-                      h(
-                        BusyBtn,
-                        {
-                          primary: true,
-                          busy: tasks.has(K_IMG_JOB),
-                          busyText: T("正在生成 {n0} 张…", { n0: settingsDraft.count ?? 1 }),
-                          disabled: promptDraft.trim() === "" || tasks.has(K_IMG_JOB),
-                          onClick: () =>
-                            void run(
-                              async () => {
-                                await enqueueImageSave({ prompt: promptDraft, suffix: suffixDraft, settings: settingsDraft });
-                                return api.runImageJob({ jobId: job.id });
-                              },
-                              T("已开始生成 {n0} 张", { n0: settingsDraft.count ?? 1 }),
-                              { key: K_IMG_JOB, label: T("正在生成 {n0} 张图片…", { n0: settingsDraft.count ?? 1 }) }
-                            )
-                        },
-                        T("生成 {n0} 张", { n0: settingsDraft.count ?? 1 })
-                      ),
-                      h("span", { className: "SPR_refRow" }, T("按当前生图后端的账号价格计费，实际以平台账单为准"))
-                    )
-                  ),
-                  h(
-                    "div",
-                    { className: "SPR_card" },
-                    h("div", { className: "SPR_cardHead" }, h("h3", null, T("② 参考图（可留空）"))),
-                    h("p", { className: "SPR_hint" }, T("最多 10 张。有参考图时走图生图；引用多张时可在提示词里写「图一」「图二」。") ),
-                    h(UploadBox, { label: T("把参考图拖到这里"), accept: "image/*", multiple: true, busy: uploading || tasks.has(K_IMG_UPLOAD), onFiles: (files) => void upload(files, "ref") }),
-                    (job.refs ?? []).length === 0
-                      ? null
-                      : h(
-                          "div",
-                          { className: "SPR_grid" },
-                          (job.refs ?? []).map((ref) =>
+                          ),
+                          h(
+                            "div",
+                            { className: "SPR_fields", "data-testid": "image-toapis-refs" },
+                            h("p", { className: "SPR_hint" }, T("最多 10 张。有参考图时走图生图；引用多张时可在提示词里写「图一」「图二」。") ),
+                            h(UploadBox, { label: T("把参考图拖到这里"), accept: "image/*", multiple: true, busy: uploading || tasks.has(K_IMG_UPLOAD), onFiles: (files) => void upload(files, "ref") }),
+                            (job.refs ?? []).length === 0
+                              ? null
+                              : h(
+                                  "div",
+                                  { className: "SPR_grid" },
+                                  (job.refs ?? []).map((ref) =>
+                                    h(
+                                      "div",
+                                      { key: ref.file, className: "SPR_node" },
+                                      h("img", { className: "SPR_thumb", src: `${job.assetBase}${ref.file}?v=${job.updatedAt}`, alt: ref.name }),
+                                      h("span", { className: "SPR_refRow" }, ref.name),
+                                      h("div", { className: "SPR_btnRow" }, h(Btn, { danger: true, onClick: () => void run(() => api.removeImageRef({ jobId: job.id, file: ref.file }), T("已移除参考图")) }, T("移除")))
+                                    )
+                                  )
+                                )
+                          ),
+                          h(
+                            "div",
+                            { className: "SPR_toolbar" },
                             h(
-                              "div",
-                              { key: ref.file, className: "SPR_node" },
-                              h("img", { className: "SPR_thumb", src: `${job.assetBase}${ref.file}?v=${job.updatedAt}`, alt: ref.name }),
-                              h("span", { className: "SPR_refRow" }, ref.name),
-                              h("div", { className: "SPR_btnRow" }, h(Btn, { danger: true, onClick: () => void run(() => api.removeImageRef({ jobId: job.id, file: ref.file }), T("已移除参考图")) }, T("移除")))
-                            )
+                              BusyBtn,
+                              {
+                                primary: true,
+                                busy: tasks.has(K_IMG_JOB),
+                                busyText: T("正在生成 {n0} 张…", { n0: settingsDraft.count ?? 1 }),
+                                disabled: promptDraft.trim() === "" || tasks.has(K_IMG_JOB),
+                                onClick: () =>
+                                  void run(
+                                    async () => {
+                                      await enqueueImageSave({ prompt: promptDraft, suffix: suffixDraft, settings: settingsDraft });
+                                      return api.runImageJob({ jobId: job.id });
+                                    },
+                                    T("已开始生成 {n0} 张", { n0: settingsDraft.count ?? 1 }),
+                                    { key: K_IMG_JOB, label: T("正在生成 {n0} 张图片…", { n0: settingsDraft.count ?? 1 }) }
+                                  )
+                              },
+                              T("生成 {n0} 张", { n0: settingsDraft.count ?? 1 })
+                            ),
+                            h("span", { className: "SPR_refRow" }, T("按当前生图后端的账号价格计费，实际以平台账单为准"))
+                          )
                           )
                         )
+                      : null
                   ),
                   h(
                     "div",

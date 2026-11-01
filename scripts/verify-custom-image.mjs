@@ -336,6 +336,21 @@ section("4b) 提示词兜底");
     "只改提示词类输入，不碰 ckpt_name / unet_name",
     splitSent["4"].inputs.ckpt_name === "x.safetensors" && sent["474"].inputs.unet_name === "qwen.safetensors"
   );
+
+  /**
+   * 图片模块的 ComfyUI 页签不再提供提示词输入框（只走工作流 API）：
+   * 这时候提示词是空串，**不该写工作流、也不该告警** —— 图照样按工作流里写的出。
+   */
+  received.length = 0;
+  comfyHistoryCalls = 0;
+  const noPrompt = await generateComfyImage({
+    baseUrl: ORIGIN, apiKey: "", prompt: "", images: [], size: "1024x1024",
+    timeoutMs: 30000, negativePrompt: "", steps: 8, cfgScale: 1, sampler: "euler", denoising: 1, seed: 1,
+    workflow: hardcoded
+  });
+  const noPromptSent = jsonOf(pathHits("/prompt")[0]).prompt;
+  check("没填提示词时不动工作流里写死的提示词", noPromptSent["452"].inputs.prompt === "一棵孤独的树", JSON.stringify(noPromptSent["452"].inputs.prompt));
+  check("没填提示词时不产生「提示词没生效」告警", (noPrompt.warnings ?? []).length === 0, JSON.stringify(noPrompt.warnings));
 }
 
 // ── 5. 参数优先级：面板 > 占位符 > 工作流默认 ─────────────────────────

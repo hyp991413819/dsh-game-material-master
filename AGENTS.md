@@ -48,6 +48,13 @@ DSH 插件「游戏素材大师」：从一张角色设定图出发批量产出�
 那会把 `ckpt_name` / `lora_name` 一起改坏）。实在找不到就回 `warnings` 让 `imagegen` 写进任务日志 ——
 「提示词没生效」这种情况图照样出得来，不告警用户完全看不出来。
 
+**图片生成面板的提示词 / 附加提示词 / 参考图只挂在 ToAPIs 页签下**：ComfyUI 那条路只调工作流 API，
+提示词在文本编码节点里、参考图在 LoadImage 里，面板上再摆一份只会让人以为填了有用（填了也不生效、
+还不报错）。因此面板提示词为空是 ComfyUI 的**正常状态**：`runImageJob` / `generateImageItem` 的
+「提示词不能为空」只在 ToAPIs 生效（`imagegen.assertPromptReadyForBackend`），
+`customimage` 的顺拓扑兜底在提示词为空时既不写工作流、也不发「没生效」告警。
+ToAPIs 那边的提示词必须留着 —— 它没有工作流，提示词就是唯一输入。
+
 图生视频默认走 MiniMax，也可以改走本机 / 远端 ComfyUI（`src/videogen.ts` 按**节点上记的** `backend`
 分派，`src/comfy.ts` 是 ComfyUI 客户端）。
 
@@ -125,13 +132,13 @@ npm run typecheck    # 只做类型检查
 
 ```bash
 node scripts/verify-host.mjs       # 宿主全链路（387 项）
-node scripts/verify-client.mjs     # 浏览器半区契约（362 项）
+node scripts/verify-client.mjs     # 浏览器半区契约（363 项）
 node scripts/verify-tools.mjs      # 对话调用面（196 项，含常驻工具面 ≤6,000 B 预算）
 node scripts/verify-pipeline.mjs   # 抽帧 / 抠像 / 合成（40 项）
-node scripts/verify-feedback.mjs   # 浏览器半区真渲染（217 项，含功能管理、侧栏菜单、生图后端设置页、语义保存错误与草稿合并）
+node scripts/verify-feedback.mjs   # 浏览器半区真渲染（264 项，含功能管理、侧栏菜单、生图后端设置页、生图后端页签（ComfyUI 不出提示词 / ToAPIs 必须有）、语义保存错误与草稿合并）
 node scripts/verify-i18n.mjs       # 中英词条表契约（9 项）
 node scripts/verify-comfy.mjs      # 本地 ComfyUI 后端（124 项，自起 mock ComfyUI，纯本地、不用装 ComfyUI）
-node scripts/verify-custom-image.mjs  # ComfyUI 生图后端（95 项：起本地假服务端，覆盖提交/轮询/取图、占位符类型、参数发现与应用、多工作流，离线零计费）
+node scripts/verify-custom-image.mjs  # ComfyUI 生图后端（97 项：起本地假服务端，覆盖提交/轮询/取图、占位符类型、参数发现与应用、多工作流、提示词兜底（含「面板没填就什么都不写、也不告警」），离线零计费）
 node scripts/verify-toapis.mjs       # ToAPIs 可选异步图片 / 视频后端（43 项，mock HTTP、零付费调用）
 node scripts/verify-music.mjs      # 音乐生成编辑：mock 谱乐 AI 的生成/轮询/下载/编辑/导出/工具/路由（86 项）
 node scripts/verify-music-score.mjs   # 谱曲模式：方案 / 假 Python / 内置试听 / 乐谱包 / Suno 上传+cover mock（46 项，纯本地）

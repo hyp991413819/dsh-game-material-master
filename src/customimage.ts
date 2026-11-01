@@ -485,8 +485,13 @@ async function generateComfyUi(request: ComfyImageRequest, context: SignalContex
    * 这里只补「谁都没写」的那种情况（用户从 ComfyUI 导出的工作流，提示词是写死的字符串）。
    *
    * ⚠️ 这条以前是缺的，表现是「任务面板上填的提示词完全不生效、每次出同一张图、不报任何错」。
+   *
+   * 图片模块的 ComfyUI 页签已经不再提供提示词输入框（只走工作流 API），
+   * 所以「谁都没写」在这里是**正常状态**：`request.prompt` 为空时什么都不写、
+   * 也不告警 —— 图照样按工作流里写的出。八方向 / 序列帧 / UI 那些模块仍会带提示词，
+   * 走的是同一条兜底。
    */
-  if (!used.has("prompt")) {
+  if (!used.has("prompt") && request.prompt.trim() !== "") {
     const patched = patchPromptByTopology(workflow, request.prompt, request.negativePrompt);
     if (!patched.positive) {
       /**

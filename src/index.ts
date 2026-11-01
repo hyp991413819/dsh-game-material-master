@@ -1832,7 +1832,8 @@ export class GameStudioGateway extends TypertRemoteService {
     const jobId = asString(input.jobId);
     const job = await imagegen.readImageJob(jobId);
     if (job === undefined) throw new Error(`任务不存在：${jobId}`);
-    if (job.prompt.trim() === "") throw new Error("提示词为空，请先填写");
+    // 提示词只有 ToAPIs 才必需：ComfyUI 只走工作流，提示词写在工作流里。
+    await imagegen.assertPromptReadyForBackend(job);
     const count = clampInt(input.count, job.settings.count, 1, 8);
     if (count !== job.settings.count) {
       job.settings.count = count;

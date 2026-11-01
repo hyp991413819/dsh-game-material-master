@@ -342,7 +342,7 @@ const api = new Proxy(
  * 本地却什么都看不出来。数字变了就说明 Hook 顺序改了，必须同步这里的槽位。
  */
 const EXPECTED_HOOKS = {
-  StudioPanel: 21,
+  StudioPanel: 23,
   ImageModule: 19,
   SequenceModule: 17
 };
@@ -355,16 +355,17 @@ const EXPECTED_HOOKS = {
  *   0 useLocaleTick / 1 projects / 2 projectId / 3 project / 4 stage / 5 module /
  *   6 notice / 7 loading / 8 promptDraft / 9 promptOpen / 10 videoPromptDraft /
  *   11 settingsDraft / 12 sourceBusy / 13 dropOver /
- *   14 fileInputRef(useRef) / 15 usePendingTasks 的 map / 16·17 usePendingTasks 内部两个 ref /
- *   18 useStudioIntent（深链接意图；null = 没有待处理的链接）/
- *   19 useHiddenModules（被隐藏的功能模块 key 数组；[] = 五个全可见）/
- *   20 loadedPrompts(useRef，上次从宿主读到的提示词；不读槽位)
+ *   14 fileInputRef(useRef) / 15 moduleTip（左侧功能栏的悬浮说明）/
+ *   16 moduleTipAnchor(useRef) / 17 usePendingTasks 的 map / 18·19 usePendingTasks 内部两个 ref /
+ *   20 useStudioIntent（深链接意图；null = 没有待处理的链接）/
+ *   21 useHiddenModules（被隐藏的功能模块 key 数组；[] = 九个全可见）/
+ *   22 悬浮说明重新锚定的 useEffect / 23 loadedPrompts(useRef，上次从宿主读到的提示词)
  *
- * ⚠️ 槽位是**稀疏**的：下标 18 之前的几个 `undefined` 会让桩回落到 Hook 的初始值，
+ * ⚠️ 槽位是**稀疏**的：下标 21 之前的几个 `undefined` 会让桩回落到 Hook 的初始值，
  * 所以新加的 Hook 必须显式写它的下标——顺手 append 到数组末尾会落到 ref 槽上，
  * 测试会「看起来没生效」。
  *
- * `hidden` 就是第 19 槽：传 `["rig"]` 之类就能测「隐藏后页签里不再出现」。
+ * `hidden` 就是第 21 槽：传 `["rig"]` 之类就能测「隐藏后图标栏里不再出现」。
  */
 function renderStage(project, stage, tasks, hidden = []) {
   HOOK.slots = [];
@@ -383,9 +384,11 @@ function renderStage(project, stage, tasks, hidden = []) {
   HOOK.slots[12] = false;
   HOOK.slots[13] = false;
   HOOK.slots[14] = undefined;
-  HOOK.slots[15] = tasks.map;
-  HOOK.slots[16] = null;
-  HOOK.slots[19] = hidden;
+  // 15 = moduleTip：传 null 表示「鼠标没停在功能栏上」，说明浮层不渲染。
+  HOOK.slots[15] = null;
+  HOOK.slots[17] = tasks.map;
+  HOOK.slots[18] = null;
+  HOOK.slots[21] = hidden;
   HOOK.cursor = 0;
   hookOverflow = false;
   const tree = panel({ api });
@@ -983,14 +986,25 @@ if (typeof ImageModule === "function") {
         JSON.stringify(tabIds));
       check("默认停在「跟随全局」页签", tabsOf(idle.tree).find((node) => node.props["data-testid"] === "image-backend-tab-global")?.props?.["data-active"] === "true");
       // 夹具的全局后端是 comfyui → 默认页签下应显示工作流，且不显示 ToAPIs 参数。
-      check("ComfyUI 页签下显示工作流下拉", collect(idle.tree, (node) => node.props?.["data-testid"] === "image-workflow-pick").length === 1);
-      check("ComfyUI 页签下不显示 ToAPIs 参数面板", collect(idle.tree, (node) => node.props?.["data-testid"] === "image-toapis-params").length === 0);
+      const comfyJob = makeImageJob({ settings: { count: 2, size: "2K", sizeMode: "global", backend: "comfyui", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } } });
+      const comfyTree = renderModule(ImageModule, comfyJob, makeTasks()).tree;
+      const has = (tree, id) => collect(tree, (node) => node.props?.["data-testid"] === id).length;
+      check("ComfyUI 页签下显示工作流下拉", has(comfyTree, "image-workflow-pick") === 1);
+      check("ComfyUI 页签下不显示 ToAPIs 参数面板", has(comfyTree, "image-toapis-params") === 0);
+      // ComfyUI 只走工作流 API：提示词 / 附加提示词 / 参考图都不在这个页签下出现。
+      check("ComfyUI 页签下没有提示词输入框", byTag(comfyTree, "textarea").length === 0, `${byTag(comfyTree, "textarea").length} 个`);
+      check("ComfyUI 页签下没有参考图上传口", has(comfyTree, "image-toapis-refs") === 0);
+      check("ComfyUI 页签下仍能直接生成（不按提示词为空禁用）",
+        byTag(comfyTree, "button").some((node) => /^生成 [0-9]+ 张$/.test(textOf(node)) && node.props.disabled !== true));
 
       const toapisJob = makeImageJob({ settings: { count: 2, size: "2K", sizeMode: "global", backend: "toapis", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } } });
       const toapisTree = renderModule(ImageModule, toapisJob, makeTasks()).tree;
-      check("ToAPIs 页签下显示 ToAPIs 参数面板", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-toapis-params").length === 1);
-      check("ToAPIs 页签下不显示工作流下拉", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-workflow-pick").length === 0);
-      check("ToAPIs 页签下不显示节点参数面板", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-workflow-params").length === 0);
+      check("ToAPIs 页签下显示 ToAPIs 参数面板", has(toapisTree, "image-toapis-params") === 1);
+      check("ToAPIs 页签下显示提示词与附加提示词（否则出不了图）",
+        has(toapisTree, "image-prompt") === 1 && has(toapisTree, "image-prompt-suffix") === 1);
+      check("ToAPIs 页签下显示参考图上传口", has(toapisTree, "image-toapis-refs") === 1);
+      check("ToAPIs 页签下不显示工作流下拉", has(toapisTree, "image-workflow-pick") === 0);
+      check("ToAPIs 页签下不显示节点参数面板", has(toapisTree, "image-workflow-params") === 0);
       check("ToAPIs 页签被标为当前", collect(toapisTree, (node) => node.props?.["data-testid"] === "image-backend-tab-toapis")[0]?.props?.["data-active"] === "true");
 
       // 两个后端的参数互不影响：ToAPIs 的任务里，ComfyUI 的 params 保持原样。
@@ -1215,16 +1229,49 @@ section("功能管理（隐藏模块）");
     JSON.stringify(normalizeHiddenKeys(["nope", "iso", "sprite"]))
   );
 
-  const tabs = (tree) => byClass(tree, "SPR_module").map((node) => node.props?.["data-module"]);
+  // 功能导航在**左侧图标栏**（方形图标按钮），不再是顶部文字页签。
+  const tabs = (tree) => byClass(tree, "SPR_modRailBtn").map((node) => node.props?.["data-module"]);
+  /** 图标按钮没有可见文字，模块名只存在于 `title` / `aria-label` 上。 */
+  const tabTitles = (tree) => byClass(tree, "SPR_modRailBtn").map((node) => String(node.props?.title ?? ""));
   const all = renderStage(makeProject(), "images", makeTasks());
-  check(`默认 ${MODULE_COUNT} 个页签都在`, tabs(all.tree).length === MODULE_COUNT, tabs(all.tree).join("、"));
+  check(`默认 ${MODULE_COUNT} 个功能按钮都在`, tabs(all.tree).length === MODULE_COUNT, tabs(all.tree).join("、"));
+  check("功能栏渲染在左边（不是顶部页签条）", byClass(all.tree, "SPR_modRail").length === 1 && byClass(all.tree, "SPR_modules").length === 0);
   check("默认没有「已隐藏」提示", byClass(all.tree, "SPR_modulesHiddenNote").length === 0);
+  check("默认不显示悬浮说明（要鼠标放上去才出现）", byClass(all.tree, "SPR_modRailTip").length === 0);
+  check(
+    "图标按钮带读屏标签（标题 + 介绍）",
+    byClass(all.tree, "SPR_modRailBtn").every((node) => typeof node.props?.["aria-label"] === "string" && node.props["aria-label"].includes("·")),
+    String(byClass(all.tree, "SPR_modRailBtn")[0]?.props?.["aria-label"])
+  );
+  check(
+    "每个功能按钮都有自己的图标（不是同一个通用图形）",
+    new Set(
+      byClass(all.tree, "SPR_modRailBtn").map((node) => {
+        const svgs = collect(node, (child) => child.type === "svg");
+        // 整个 svg 子树序列化当指纹。`h("svg", props, shapes)` 的 children 是
+        // 一层嵌套数组，所以不能按 `children.length` 判断图形个数。
+        return svgs.length === 1 ? JSON.stringify(svgs[0].children) : "?";
+      })
+    ).size === MODULE_COUNT,
+    byClass(all.tree, "SPR_modRailBtn")
+      .map((node) => {
+        const svgs = collect(node, (child) => child.type === "svg");
+        const shapes = svgs.length === 1 ? collect(svgs[0], (child) => child.type !== "svg") : [];
+        return `${node.props?.["data-module"]}:${shapes.length}`;
+      })
+      .join("、")
+  );
 
   const some = renderStage(makeProject(), "images", makeTasks(), ["rig", "iso"]);
-  check("隐藏后对应页签不再渲染", !tabs(some.tree).includes("rig") && !tabs(some.tree).includes("iso"), tabs(some.tree).join("、"));
+  check("隐藏后对应功能按钮不再渲染", !tabs(some.tree).includes("rig") && !tabs(some.tree).includes("iso"), tabs(some.tree).join("、"));
   const visibleKeys = MODULE_KEYS.filter((key) => key !== "rig" && key !== "iso");
-  check(`其余页签保留（${visibleKeys.length} 个）`, tabs(some.tree).join("、") === visibleKeys.join("、"), tabs(some.tree).join("、"));
+  check(`其余功能按钮保留（${visibleKeys.length} 个）`, tabs(some.tree).join("、") === visibleKeys.join("、"), tabs(some.tree).join("、"));
   check("出现「已隐藏 N 个功能」提示", byClass(some.tree, "SPR_modulesHiddenNote").length === 1);
+  check(
+    "被隐藏的模块不出现在图标栏里（按标题核对）",
+    !tabTitles(some.tree).includes("骨骼动画生成") && !tabTitles(some.tree).includes("45°地图编辑器"),
+    tabTitles(some.tree).join("、")
+  );
 
   // 当前选中的模块被隐藏时，界面必须落到第一个可见模块，而不是渲染一个被隐藏的模块。
   const fallback = renderStage(makeProject(), "images", makeTasks(), ["sprite"]);
@@ -1233,10 +1280,10 @@ section("功能管理（隐藏模块）");
     tabs(fallback.tree).join("、") === MODULE_KEYS.filter((key) => key !== "sprite").join("、"),
     tabs(fallback.tree).join("、")
   );
-  check("被隐藏模块的界面不再渲染", byClass(fallback.tree, "SPR_moduleTitle").map(textOf).includes("图片生成"));
+  check("被隐藏模块的界面不再渲染", tabTitles(fallback.tree).includes("图片生成"));
 
   const none = renderStage(makeProject(), "images", makeTasks(), MODULE_KEYS);
-  check("全隐藏时一个页签都没有", tabs(none.tree).length === 0, tabs(none.tree).join("、"));
+  check("全隐藏时一个功能按钮都没有", tabs(none.tree).length === 0, tabs(none.tree).join("、"));
   check(
     "全隐藏时给出去哪打开的提示",
     textOf(none.tree).includes("所有功能都已被隐藏") && textOf(none.tree).includes("功能管理"),
@@ -1605,7 +1652,9 @@ section("图片提示词保存与生成时序");
     getImageJob: async () => job,
     listImageJobs: async () => ({ jobs: [job] })
   };
-  HOOK.slots = [0, [job], job.id, job, null, false, "latest typed prompt", "", {...job.settings}, {...job.keying}, undefined, {}, null];
+  // 提示词输入框只在 ToAPIs 页签下渲染（ComfyUI 只走工作流）。
+  const toapisSettings = { count: 2, size: "2K", sizeMode: "global", backend: "toapis", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } };
+  HOOK.slots = [0, [job], job.id, job, null, false, "latest typed prompt", "", {...toapisSettings}, {...job.keying}, undefined, {}, null];
   HOOK.cursor = 0;
   const tree = ImageModule({ api: apiQueued });
   const prompt = byTag(tree, "textarea").find(node => node.props.placeholder === "描述你要生成的图片…");
@@ -1618,6 +1667,26 @@ section("图片提示词保存与生成时序");
   releaseFirst();
   await generated;
   check("所有保存完成后才使用最新提示词生成", calls.map(x=>x.type).join(",") === "save,save,generate" && calls.at(-1).prompt === "latest typed prompt", JSON.stringify(calls));
+}
+
+section("图片任务：ComfyUI 页签只走工作流，不需要面板提示词");
+{
+  const comfyJob = makeImageJob({ prompt: "", settings: { count: 1, size: "2K", sizeMode: "global", backend: "comfyui", workflowId: "", params: {}, toapis: { model: "", quality: "", background: "auto" } } });
+  const calls = [];
+  const apiComfy = {
+    saveImageJob: async payload => { calls.push(Object.keys(payload).sort().join(",")); return { ok: true }; },
+    runImageJob: async () => { calls.push("generate"); return { started: true }; },
+    getImageJob: async () => comfyJob,
+    listImageJobs: async () => ({ jobs: [comfyJob] })
+  };
+  HOOK.slots = [0, [comfyJob], comfyJob.id, comfyJob, null, false, "", "", { ...comfyJob.settings }, { ...comfyJob.keying }, undefined, {}, null];
+  HOOK.cursor = 0;
+  const tree = ImageModule({ api: apiComfy });
+  const generate = byTag(tree, "button").find(node => (/^生成 [0-9]+ 张$/).test(textOf(node)));
+  check("提示词为空时 ComfyUI 页签的生成按钮仍可点", Boolean(generate) && generate.props.disabled !== true);
+  generate.props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  check("ComfyUI 生成只保存设置、不带面板提示词", calls.join("|") === "jobId,settings|generate", JSON.stringify(calls));
 }
 
 report();
