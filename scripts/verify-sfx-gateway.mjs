@@ -99,7 +99,8 @@ try {
   check("testSfx 是共享方法", toolsurface.SHARED_TOOL_METHODS.has("testSfx"));
   check("模块名与界面一致", toolsurface.MODULE_LABELS.sfx === "音效生成", toolsurface.MODULE_LABELS.sfx);
   check("f 前缀判成 sfx", toolsurface.moduleForId("fabc123") === "sfx");
-  check("sfx 出现在 STUDIO_MODULES 末尾", links.STUDIO_MODULES.at(-1) === "sfx", links.STUDIO_MODULES.join(","));
+  // 不钉「最后一个」：模块九 `ui` 接在 sfx 之后，钉末尾会让加模块时误报。
+  check("sfx 出现在 STUDIO_MODULES 里", links.STUDIO_MODULES.includes("sfx"), links.STUDIO_MODULES.join(","));
 
   const link = links.buildOpenLink({ module: "sfx", jobId: "fabc123", stage: "generate" }, "http://127.0.0.1:43120");
   const intent = links.parseIntentQuery(link.split("?")[1]);

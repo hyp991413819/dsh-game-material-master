@@ -124,7 +124,8 @@ const textOf = (node) => {
 // ── 静态契约 ────────────────────────────────────────────────────────────
 section("1) 模块注册 / 深链接 / 设置页");
 check("浏览器模块表有 sfx", /function make_MODULES\(\)[\s\S]*?key: "sfx", title: T\("音效生成"\)/.test(source));
-check("OPEN_MODULES 放行 sfx", source.includes('new Set(["sprite", "image", "sequence", "rig", "iso", "map", "music", "sfx"])'));
+// 深链接白名单。用正则而不是钉死整行：模块九 `ui` 接进来之后这一行还会继续变长。
+check("OPEN_MODULES 放行 sfx", /new Set\(\[[^\]]*"sfx"[^\]]*\]\)/.test(source));
 check("深链接能解析 sfx", (() => {
   const intent = T.parseIntents("?dsh-gmm=1&module=sfx&job=f1234&stage=generate");
   return intent?.module === "sfx" && intent?.jobId === "f1234" && intent?.stage === "generate";

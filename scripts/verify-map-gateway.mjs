@@ -704,7 +704,10 @@ try {
   check("mapInspect 走网关：逐格文本 / 标记 / 统计都有", Array.isArray(gwInspect.layers) && typeof gwInspect.layers[0].rows?.[0] === "string" && gwInspect.markers.some((marker) => marker.name === "网关标记") && gwInspect.stats.filled > 0, JSON.stringify({ rows: gwInspect.layers[0].rows?.[0], markers: gwInspect.markers.length }));
   check("mapInspect 的 revision 与视图一致", gwInspect.revision === (await gw("getMapProject", { projectId })).revision, gwInspect.revision);
   const gwRender = await gw("mapRender", { projectId, region: { r0: 0, c0: 0, r1: 8, c1: 8 }, scale: 2, overlay: { markers: true, grid: true, outlines: [{ r: 3, c: 3, color: "#ff0000", label: "3" }] }, name: "gateway-check" });
-  check("mapRender 走网关：返回本机 PNG / 尺寸 / 标记数", gwRender.localPath.includes("preview/agent") && gwRender.width === 8 * 32 * 2 && gwRender.markersDrawn >= 1 && typeof gwRender.revision === "string", JSON.stringify({ file: gwRender.file, width: gwRender.width, markers: gwRender.markersDrawn }));
+  // ⚠️ 路径分隔符不能写死成 `/`：Windows 上 `localPath` 是 `…\preview\agent\x.png`，
+  // 断言 `.includes("preview/agent")` 会在 Windows 上永远失败（自检红、功能却是好的）。
+  const gwRenderPath = String(gwRender.localPath ?? "").replace(/\\/g, "/");
+  check("mapRender 走网关：返回本机 PNG / 尺寸 / 标记数", gwRenderPath.includes("preview/agent") && gwRender.width === 8 * 32 * 2 && gwRender.markersDrawn >= 1 && typeof gwRender.revision === "string", JSON.stringify({ file: gwRender.file, width: gwRender.width, markers: gwRender.markersDrawn, revision: gwRender.revision }));
   const gwDry = await gw("applyMapOps", { projectId, dryRun: true, ifRevision: gwInspect.revision, ops: [{ kind: "paint", layerId: layer0, cells: [{ r: 0, c: 0, tile: base }] }] });
   check("applyMapOps.dryRun 走网关：标 dryRun 且不写 revision", gwDry.dryRun === true && gwDry.revision === gwInspect.revision, JSON.stringify({ dryRun: gwDry.dryRun, revision: gwDry.revision }));
   const gwMarkMeta = await gw("applyMapOps", { projectId, ops: [{ kind: "marker", op: "update", id: gwView.markers[0].id, patch: { kind: "chest", color: "#ffcc00", note: "网关备注", tags: ["a"] } }] });

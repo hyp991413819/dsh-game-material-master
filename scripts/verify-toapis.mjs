@@ -162,9 +162,10 @@ try {
     ])
       assert.throws(() => toapisRoot(url));
   });
-  check("defaults preserve Ark/MiniMax", () => {
+  // 0.13.0 起生图后端只剩 ComfyUI（默认）与 ToAPIs，火山方舟的 `ark` 已删除。
+  check("defaults preserve ComfyUI/MiniMax", () => {
     const c = normalizeConfig({});
-    assert.equal(c.imageProvider, "ark");
+    assert.equal(c.imageProvider, "comfyui");
     assert.equal(videoBackendOf(c), "minimax");
   });
   check("masked key never returned", () => {

@@ -27,13 +27,15 @@ const LINKS = await import("../lib/links.js");
 const source = readFileSync(new URL("../src/wire.ts", import.meta.url), "utf8");
 
 section("1) 方法表 / 模块枚举");
-check("wire 方法总数为 188", WIRE.METHODS.length === 188, String(WIRE.METHODS.length));
+// 方法总数每个模块接入都会变；这里只钉「至少包含 iso 时代的方法数」，
+// 精确条数由 verify-client（REMOTE_METHODS ↔ api 实现逐条对齐）负责。
+check("wire 方法总数不少于 188（模块⑤接入时的基线）", WIRE.METHODS.length >= 188, String(WIRE.METHODS.length));
 const names = new Set(WIRE.METHODS.map((method) => method.method));
 for (const method of ["listIsoProjects", "createIsoProject", "getIsoProject", "saveIsoProject", "deleteIsoProject", "importIsoTileset", "importIsoSampleTileset", "composeIsoAsset", "saveIsoTileset", "removeIsoTileset", "saveIsoDoc", "applyIsoOps", "isoUndo", "isoRedo", "isoPlan", "isoInspect", "isoRender", "runIsoGenerate", "runIsoPreview", "runIsoExport", "cancelIsoJob", "setIsoApproved", "revealIsoProject"]) {
   check(`注册了 ${method}`, names.has(method));
 }
 check("不再注册 tile 方法", ![...names].some((method) => /^(list|create|get|save|delete|run|set|cancel|reveal)Tile/.test(method)));
-check("模块顺序为 sprite,image,sequence,rig,iso,map,music,sfx", LINKS.STUDIO_MODULES.join(",") === "sprite,image,sequence,rig,iso,map,music,sfx", LINKS.STUDIO_MODULES.join(","));
+check("模块顺序为 sprite,image,sequence,rig,iso,map,music,sfx,ui", LINKS.STUDIO_MODULES.join(",") === "sprite,image,sequence,rig,iso,map,music,sfx,ui", LINKS.STUDIO_MODULES.join(","));
 check("阶段为 assets,paint,export", LINKS.ISO_STAGES.join(",") === "assets,paint,export", LINKS.ISO_STAGES.join(","));
 const isoIntent = LINKS.parseIntentQuery("dsh-gmm=1&module=iso&job=gabc1234&stage=assets&dialog=add&asset=ai/x.png&shape=ground&frames=2&scale=4&cols=2&rows=2&keyed=1");
 check("深链接放行 module=iso", isoIntent?.module === "iso");

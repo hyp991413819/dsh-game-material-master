@@ -123,7 +123,9 @@ const textOf = (node) => {
 // ── 静态契约 ────────────────────────────────────────────────────────────
 section("1) 模块注册 / 深链接 / 设置页");
 check("浏览器模块表有 music", /function make_MODULES\(\)[\s\S]*?key: "music", title: T\("音乐生成编辑"\)/.test(source));
-check("OPEN_MODULES 放行 music", source.includes('const OPEN_MODULES = new Set(["sprite", "image", "sequence", "rig", "iso", "map", "music", "sfx"])'));
+// 深链接白名单。用正则而不是钉死整行：模块九 `ui` 接进来之后这一行还会继续变长，
+// 钉死整串会让「加一个模块」变成「改三条不相干的自检」。
+check("OPEN_MODULES 放行 music", /const OPEN_MODULES = new Set\(\[[^\]]*"music"/.test(source));
 check("★ origin 上报失败会退避重试（宿主刚重启时不能永远停在 localhost）", source.includes("const send = (attempt)") && source.includes("attempt < 60") && source.includes('addEventListener("focus"') && source.includes("visibilitychange"));
 check("解析 music 深链接", (() => {
   const intent = T.parseIntents("?dsh-gmm=1&module=music&job=a1234&stage=edit");
